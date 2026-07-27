@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+:root {
+  /* MCPSwap design tokens, agreed with the user before this build */
+  --mcp-bg: #0a0b0d;
+  --mcp-surface: #111318;
+  --mcp-border: #1e2128;
+  --mcp-text: #f5f6f7;
+  --mcp-text-dim: #8a8f98;
+  --mcp-accent: #0052ff;
+  --mcp-accent-hover: #3374ff;
+
+  --background: var(--mcp-bg);
+  --foreground: var(--mcp-text);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Override OnchainKit's "base" theme tokens to match MCPSwap's palette
+   instead of the library's own default shade of Base Blue. */
+.default-dark,
+.base {
+  --ock-font-family: var(--font-geist-sans);
+  --ock-border-radius: 16px;
+  --ock-bg-primary: var(--mcp-surface);
+  --ock-bg-default: var(--mcp-bg);
+  --ock-text-primary: var(--mcp-text);
+  --ock-text-foreground-muted: var(--mcp-text-dim);
+  --ock-icon-color-primary: var(--mcp-accent);
+}
