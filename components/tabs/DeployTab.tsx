@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   useAccount,
   usePublicClient,
@@ -12,7 +12,6 @@ import {
   CHAIN_ID,
   FACTORY_ABI,
   FACTORY_CONTRACT_ADDRESS,
-  MINT_PRICE_ABI,
   MINT_QTY_SELECTOR,
   PROXY,
   TRANSFER_FROM_ABI,
@@ -97,7 +96,7 @@ export function DeployTab() {
     const trimmedName = name.trim();
     const trimmedSymbol = symbol.trim().toUpperCase();
     const maxSupply = parseInt(supply);
-    const priceEth = parseFloat(price) || 0;
+    const priceEth = parseFloat(price.replace(",", ".")) || 0;
     if (!trimmedName || !trimmedSymbol || !maxSupply) {
       setDeployError("Please fill in all fields");
       return;
@@ -157,6 +156,7 @@ export function DeployTab() {
       if (newAddr) {
         setDeployedAddress(newAddr);
         setDeployedName(trimmedName);
+        setMintPriceWei(priceWei);
       }
     } catch (e) {
       const err = e as { shortMessage?: string; message?: string };
@@ -166,29 +166,12 @@ export function DeployTab() {
     }
   }
 
-  async function loadMintStepPrice(contractAddress: `0x${string}`) {
-    if (!publicClient) return;
-    try {
-      // Self-deployed collections (from this Factory) always expose
-      // mintPrice() — the exact fixed price set at deploy time. Reading it
-      // directly (instead of guessing selectors) is what makes the price
-      // show up correctly and lets the mint actually go through.
-      const result = await publicClient.readContract({
-        address: contractAddress,
-        abi: MINT_PRICE_ABI,
-        functionName: "mintPrice",
-      });
-      setMintPriceWei(result as bigint);
-    } catch {
-      setMintPriceWei(0n);
-    }
-  }
-
-  // Load the mint price as soon as a collection is deployed.
-  useEffect(() => {
-    if (deployedAddress) loadMintStepPrice(deployedAddress); // eslint-disable-line react-hooks/set-state-in-effect -- fetches external on-chain price once the collection address is known
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deployedAddress]);
+  // Mint price for step 2 is not read back from chain — it's carried over
+  // directly from the value we already sent to createCollection() in
+  // handleDeploy(), since that's the exact number the contract was
+  // constructed with. Guessing a getter selector for an arbitrary deployed
+  // collection is unreliable and was the root cause of the price staying at
+  // 0 (and therefore mints reverting for non-free collections).
 
   async function handleMintStep() {
     if (!address || !deployedAddress) return;
@@ -315,11 +298,17 @@ export function DeployTab() {
         <div className="flex-1">
           <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5">Mint Price (ETH)</div>
           <input
-            type="number"
-            min={0}
-            step={0.0001}
+            type="text"
+            inputMode="decimal"
             value={price}
-            onChange={(e) => setPrice(e.target.value)}
+            onChange={(e) => {
+              // Accept digits, one dot or comma (normalized to dot), nothing else —
+              // avoids the native number input's locale-dependent comma parsing
+              // (e.g. Safari on a VN-locale Mac), which silently turned the typed
+              // price into 0 for both the deploy tx and the mint step.
+              const cleaned = e.target.value.replace(",", ".").replace(/[^0-9.]/g, "");
+              setPrice(cleaned);
+            }}
             className="w-full text-center px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold outline-none"
           />
         </div>
