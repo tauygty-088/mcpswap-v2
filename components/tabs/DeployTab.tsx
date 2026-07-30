@@ -22,7 +22,13 @@ import { ActionButton, ErrorMessage, InfoBox, TxLink } from "./shared";
 async function pinFileToIPFS(file: File): Promise<string> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${PROXY}/ipfs/image`, { method: "POST", body: form });
+  const res = await fetch(`${PROXY}/ipfs/image`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(30000),
+  }).catch((e) => {
+    throw new Error(e?.name === "TimeoutError" ? "Image upload timed out — proxy server may be down" : e.message);
+  });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || `Image upload to IPFS failed (${res.status})`);
   return data.cid;
@@ -33,6 +39,9 @@ async function pinJSONToIPFS(json: unknown): Promise<string> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(json),
+    signal: AbortSignal.timeout(30000),
+  }).catch((e) => {
+    throw new Error(e?.name === "TimeoutError" ? "Metadata upload timed out — proxy server may be down" : e.message);
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || `Metadata upload to IPFS failed (${res.status})`);
@@ -139,7 +148,10 @@ export function DeployTab() {
       });
       setDeployTxHash(hash);
 
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120_000 });
+      if (receipt.status !== "success") {
+        throw new Error("Deploy transaction reverted on-chain — check contract state on Basescan");
+      }
       let newAddr: `0x${string}` | null = null;
       for (const log of receipt.logs) {
         if (log.address.toLowerCase() !== FACTORY_CONTRACT_ADDRESS.toLowerCase()) continue;

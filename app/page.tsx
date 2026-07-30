@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useMiniKit } from "@coinbase/onchainkit/minikit";
 import { ConnectWallet, Wallet, WalletDropdown, WalletDropdownDisconnect } from "@coinbase/onchainkit/wallet";
 import { Avatar, Name, Identity, Address } from "@coinbase/onchainkit/identity";
 import { MintTab } from "@/components/tabs/MintTab";
@@ -13,9 +14,13 @@ type Tab = (typeof TABS)[number];
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("Mint NFT");
 
+  const { setFrameReady, isFrameReady } = useMiniKit();
+  useEffect(() => {
+    if (!isFrameReady) setFrameReady();
+  }, [setFrameReady, isFrameReady]);
+
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Top nav, signature gradient hairline underneath per the agreed design plan */}
       <header className="border-b border-[var(--mcp-border)] relative">
         <div
           className="absolute inset-x-0 bottom-0 h-px"
@@ -59,7 +64,6 @@ export default function Home() {
           </Wallet>
         </div>
 
-        {/* Mobile tab row */}
         <nav className="sm:hidden flex gap-1 overflow-x-auto px-4 pb-3">
           {TABS.map((tab) => (
             <button
