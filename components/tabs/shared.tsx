@@ -1,25 +1,3 @@
-"use client";
-
-import { useAccount, useSwitchChain } from "wagmi";
-import { CHAIN_ID } from "@/lib/contracts";
-
-/**
- * Returns an async function that prompts the wallet to switch to Base if
- * it's currently on a different chain. Call this right before sending any
- * transaction — without it, wagmi's sendTransactionAsync({ chainId: ... })
- * just throws a ChainMismatchError instead of asking the wallet to switch.
- */
-export function useEnsureBaseChain() {
-  const { chainId } = useAccount();
-  const { switchChainAsync } = useSwitchChain();
-
-  return async function ensureBaseChain() {
-    if (chainId !== CHAIN_ID) {
-      await switchChainAsync({ chainId: CHAIN_ID });
-    }
-  };
-}
-
 export function ErrorMessage({ message }: { message: string | null }) {
   if (!message) return null;
   return (

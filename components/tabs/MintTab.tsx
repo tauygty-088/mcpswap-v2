@@ -15,7 +15,7 @@ import {
 } from "@/lib/contracts";
 import { withBuilderSuffix } from "@/lib/txHelpers";
 import { CryptoCatArt } from "@/components/CryptoCatArt";
-import { ActionButton, ErrorMessage, InfoBox, TxLink, useEnsureBaseChain } from "./shared";
+import { ActionButton, ErrorMessage, InfoBox, TxLink } from "./shared";
 
 const MAX_PER_TX = 20;
 
@@ -48,7 +48,6 @@ export function MintTab() {
   }, [refreshPrice]);
 
   const { sendTransactionAsync } = useSendTransaction();
-  const ensureBaseChain = useEnsureBaseChain();
   const {
     isLoading: isConfirming,
     isSuccess: isConfirmed,
@@ -86,7 +85,6 @@ export function MintTab() {
         (MINT_QTY_SELECTOR + qty.toString(16).padStart(64, "0")) as `0x${string}`,
       );
 
-      await ensureBaseChain();
       const hash = await sendTransactionAsync({
         to: CRYPTOCATS_CONTRACT,
         data,

@@ -15,7 +15,7 @@ import {
   ORIGINAL_CONTRACT_ADDRESS,
 } from "@/lib/contracts";
 import { decodeOnchainTokenURI, extractTransferTokenId, withBuilderSuffix } from "@/lib/txHelpers";
-import { ActionButton, ErrorMessage, InfoBox, TxLink, useEnsureBaseChain } from "./shared";
+import { ActionButton, ErrorMessage, InfoBox, TxLink } from "./shared";
 
 type CatSlot = {
   tokenId: string;
@@ -29,7 +29,6 @@ export function BreedTab() {
   const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
   const { sendTransactionAsync } = useSendTransaction();
-  const ensureBaseChain = useEnsureBaseChain();
 
   const [mintPriceWei, setMintPriceWei] = useState<bigint | null>(null);
   const [breedPriceWei, setBreedPriceWei] = useState<bigint | null>(null);
@@ -127,7 +126,6 @@ export function BreedTab() {
           })) as bigint));
 
       const calldata = encodeFunctionData({ abi: ORIGINAL_ABI, functionName: "mint", args: [] });
-      await ensureBaseChain();
       const hash = await sendTransactionAsync({
         to: ORIGINAL_CONTRACT_ADDRESS,
         data: withBuilderSuffix(calldata),
@@ -194,7 +192,6 @@ export function BreedTab() {
         functionName: "breed",
         args: [BigInt(tokenA), BigInt(tokenB)],
       });
-      await ensureBaseChain();
       const hash = await sendTransactionAsync({
         to: ORIGINAL_CONTRACT_ADDRESS,
         data: withBuilderSuffix(calldata),

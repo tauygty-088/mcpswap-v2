@@ -1,10 +1,6 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Static export so this can deploy to Cloudflare Pages the same way as
-  // the old single-file index.html — no server runtime needed since
-  // MCPSwap has no API routes / server actions, everything runs client-side.
-  output: "export",
   turbopack: {
     resolveAlias: {
       // @base-org/account's Base subscription-payments code path (unused
