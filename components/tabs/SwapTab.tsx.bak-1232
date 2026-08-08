@@ -1,0 +1,84 @@
+"use client";
+
+import {
+  Swap,
+  SwapAmountInput,
+  SwapToggleButton,
+  SwapButton,
+  SwapMessage,
+  SwapToast,
+} from "@coinbase/onchainkit/swap";
+import type { Token } from "@coinbase/onchainkit/token";
+
+// Token list for the picker. Every token here is swappable both ways —
+// SwapToggleButton flips Sell/Buy instantly, and users can also just pick
+// a different token directly in either dropdown.
+const eth: Token = {
+  name: "ETH",
+  address: "",
+  symbol: "ETH",
+  decimals: 18,
+  image:
+    "https://wallet-api-production.s3.amazonaws.com/uploads/tokens/eth_288.png",
+  chainId: 8453,
+};
+
+const usdc: Token = {
+  name: "USDC",
+  address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  symbol: "USDC",
+  decimals: 6,
+  image:
+    "https://d3r81g40ycuhqg.cloudfront.net/wallet/wais/44/2b/442b80bd16af0c0d9b22e03a16753823fe826e5bfd457292b55fa0ba8c1ba213-ZWUzYjJmZGUtMDYxNy00NDcyLTg0NjQtMWI4OGEwYjBiODE2",
+  chainId: 8453,
+};
+
+// Icon URL intentionally omitted (null) rather than guessed — OnchainKit's
+// TokenImage renders a safe fallback for tokens with no image, and a wrong
+// guessed URL would just 404 silently. Swap in the real Coinbase asset URL
+// here once you have it (check the token on https://wallet.coinbase.com or
+// the asset's official listing).
+const cbbtc: Token = {
+  name: "Coinbase Wrapped BTC",
+  address: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+  symbol: "cbBTC",
+  decimals: 8,
+  image: null,
+  chainId: 8453,
+};
+
+const degen: Token = {
+  name: "Degen",
+  address: "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed",
+  symbol: "DEGEN",
+  decimals: 18,
+  image: null,
+  chainId: 8453,
+};
+
+const SWAPPABLE_TOKENS: Token[] = [eth, usdc, cbbtc, degen];
+
+export function SwapTab() {
+  return (
+    <div className="w-full max-w-md">
+      <Swap className="w-full">
+        <SwapAmountInput
+          label="Sell"
+          token={eth}
+          swappableTokens={SWAPPABLE_TOKENS}
+          type="from"
+        />
+        <SwapToggleButton />
+        <SwapAmountInput
+          label="Buy"
+          token={usdc}
+          swappableTokens={SWAPPABLE_TOKENS}
+          type="to"
+        />
+        <SwapButton />
+        <SwapMessage />
+        <SwapToast />
+      </Swap>
+    </div>
+  );
+}

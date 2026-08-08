@@ -1,7 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useAccount, useBalance, useSendTransaction, useWaitForTransactionReceipt } from "wagmi";
+import {
+  useAccount,
+  useBalance,
+  useSendTransaction,
+  useWaitForTransactionReceipt,
+} from "wagmi";
 import { waitForTransactionReceipt } from "wagmi/actions";
 import { setOnchainKitConfig } from "@coinbase/onchainkit";
 import { buildSwapTransaction, getTokens } from "@coinbase/onchainkit/api";
@@ -38,23 +43,10 @@ const USDC: Token = {
 // modal below can select any token on Base via getTokens(), not just these.
 
 // Manually built via OnchainKit's buildSwapTransaction (not the pre-made
-// <Swap> component, which signs internally and has no hook for attribution).
-//
-// Attribution: uses withBuilderSuffix() (manual hex concat onto calldata,
-// lib/txHelpers.ts) via plain sendTransaction — NOT the sendCalls +
-// `dataSuffix` capability path docs.base.org's quickstart shows, because
-// that path silently drops the suffix on wallets that don't yet implement
-// the capability (MetaMask, tested here, is one of them: tx still sends,
-// just with no suffix, so nothing gets attributed). Manual concatenation
-// is the older mechanism but every EOA wallet supports it, since the
-// wallet never needs to know what the extra bytes mean.
-//
-// useAggregator: true — empirically the working route for this app/pair
-// (confirmed via testing: the aggregator route landed on Uniswap V3 and
-// succeeded; useAggregator: false routed through 0x's Exchange Proxy and
-// hit an allowance error). This is opposite to the <Swap> component's own
-// documented default of false, so don't "correct" it back without testing
-// again first.
+// <Swap> component) so we can append the MCPSwap Base Builder Code suffix
+// to the calldata before signing — the <Swap> component signs internally
+// and doesn't expose a dataSuffix hook, so this lower-level API is the
+// Base-recommended way to keep both official swap quoting AND attribution.
 export function SwapTab() {
   const { address, isConnected } = useAccount();
 
@@ -77,12 +69,18 @@ export function SwapTab() {
   // Read-only balance display — does not touch swap/signing logic at all.
   const isFromNative = !fromToken.address;
   const isToNative = !toToken.address;
-  const { data: fromBalance, refetch: refetchFromBalance } = useBalance({
+  const {
+    data: fromBalance,
+    refetch: refetchFromBalance,
+  } = useBalance({
     address,
     token: isFromNative ? undefined : (fromToken.address as `0x${string}`),
     query: { enabled: !!address },
   });
-  const { data: toBalance, refetch: refetchToBalance } = useBalance({
+  const {
+    data: toBalance,
+    refetch: refetchToBalance,
+  } = useBalance({
     address,
     token: isToNative ? undefined : (toToken.address as `0x${string}`),
     query: { enabled: !!address },
@@ -150,7 +148,12 @@ export function SwapTab() {
         from: fromToken,
         to: toToken,
         amount,
-        useAggregator: true,
+        useAggregator: false, // Uniswap V3 default, matches Base docs recommendation
+        // Matches the <Swap> component's own default (config.maxSlippage:
+        // "3 for 3%" per docs.base.org/onchainkit/swap/types) -- left
+        // unset, some other default applies that's tight enough to make
+        // swaps revert after the approve-then-wait delay.
+        maxSlippage: "3",
         fromAddress: address,
       });
       if ("quote" in result) {
@@ -161,7 +164,8 @@ export function SwapTab() {
         // and/or nested under `quote`) with a human-readable
         // `description` explaining *why* a swap is likely to revert --
         // e.g. insufficient liquidity, insufficient balance, high price
-        // impact. Surfaced to the user instead of silently discarded.
+        // impact. Previously this was fetched and discarded; surfacing
+        // it here shows the real reason instead of guessing.
         const warning = result.warning ?? result.quote.warning;
         setQuoteWarning(warning?.description ?? warning?.message ?? null);
       } else {
@@ -199,12 +203,17 @@ export function SwapTab() {
         from: fromToken,
         to: toToken,
         amount,
-        useAggregator: true,
+        useAggregator: false,
+        maxSlippage: "3",
         fromAddress: address,
       });
 
       if (!("transaction" in result)) {
         throw new Error(result.error ?? "Could not build swap transaction.");
+      }
+      const initialWarning = result.warning ?? result.quote?.warning;
+      if (initialWarning) {
+        console.warn("[swap warning, before approve]", initialWarning);
       }
 
       // ERC-20 sources need an approval first (native ETH does not).
@@ -237,12 +246,18 @@ export function SwapTab() {
           from: fromToken,
           to: toToken,
           amount,
-          useAggregator: true,
+          useAggregator: false,
+          maxSlippage: "3",
           fromAddress: address,
         });
         if (!("transaction" in result)) {
           throw new Error(result.error ?? "Could not rebuild swap transaction after approval.");
         }
+      }
+
+      const finalWarning = result.warning ?? result.quote?.warning;
+      if (finalWarning) {
+        console.warn("[swap warning, right before sending]", finalWarning);
       }
 
       const swapHash = await sendTransactionAsync({

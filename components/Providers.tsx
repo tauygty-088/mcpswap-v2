@@ -16,6 +16,20 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <OnchainKitProvider
           apiKey={process.env.NEXT_PUBLIC_ONCHAINKIT_API_KEY}
           chain={base}
+          config={{
+            appearance: {
+              name: "MCPSwap",
+              mode: "dark",
+              theme: "default",
+            },
+            wallet: {
+              // Per Base docs (Wallet Modal): without this, <ConnectWallet>
+              // connects directly with the first connector (baseAccount),
+              // skipping the picker entirely. This restores the standard
+              // Coinbase Wallet / MetaMask / Phantom choice modal.
+              display: "modal",
+            },
+          }}
         >
           {children}
         </OnchainKitProvider>
