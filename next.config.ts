@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  output: "export",
   turbopack: {
     resolveAlias: {
       // @base-org/account's Base subscription-payments code path (unused
