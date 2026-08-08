@@ -1,19 +1,20 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useAccount, useSendTransaction, useWaitForTransactionReceipt } from "wagmi";
+import { useAccount, useSendTransaction } from "wagmi";
+import { waitForTransactionReceipt } from "wagmi/actions";
 import { setOnchainKitConfig } from "@coinbase/onchainkit";
-import { buildSwapTransaction } from "@coinbase/onchainkit/api";
+import { buildSwapTransaction, getTokens } from "@coinbase/onchainkit/api";
 import type { Token } from "@coinbase/onchainkit/token";
+import { config as wagmiConfig } from "@/wagmi";
 import { CHAIN_ID } from "@/lib/contracts";
 import { withBuilderSuffix } from "@/lib/txHelpers";
 import { ActionButton, ErrorMessage, InfoBox, TxLink } from "./shared";
 
-// OnchainKit's buildSwapTransaction needs an API key set once at module load.
-// Uses the same NEXT_PUBLIC_ONCHAINKIT_API_KEY as the rest of the app.
+// buildSwapTransaction / getTokens need an API key set once at module load.
 setOnchainKitConfig({ apiKey: process.env.NEXT_PUBLIC_ONCHAINKIT_API_KEY });
 
-const ETH: Token = {
+const NATIVE_ETH: Token = {
   address: "",
   chainId: CHAIN_ID,
   decimals: 18,
@@ -22,50 +23,160 @@ const ETH: Token = {
   image: "https://wallet-api-production.s3.amazonaws.com/uploads/tokens/eth_288.png",
 };
 
-const USDC: Token = {
-  address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-  chainId: CHAIN_ID,
-  decimals: 6,
-  name: "USD Coin",
-  symbol: "USDC",
-  image:
-    "https://d3r81g40ycuhqg.cloudfront.net/wallet/wais/44/2b/442b80bd16af0c0d9b22e03a16753823fe826e5bfd457292b55fa0ba8c1ba213-ZWUzYjJmZGUtMDYxNy00NDcyLTg0NjQtMWI4OGEwYjBiODE2",
-};
+// Only ETH is hardcoded (native asset, no contract to look up). Every
+// other token — including the default "Buy" side — is fetched through
+// Base's official getTokens search API so the symbol, decimals, and
+// logo are always correct instead of guessed/hardcoded.
+const DEFAULT_TO_SYMBOL = "USDC";
 
-const DAI: Token = {
-  address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
-  chainId: CHAIN_ID,
-  decimals: 18,
-  name: "Dai",
-  symbol: "DAI",
-  image: "",
-};
+function TokenIcon({ token }: { token: Token }) {
+  const [failed, setFailed] = useState(false);
+  if (!token.image || failed) {
+    return (
+      <div className="w-6 h-6 rounded-full bg-[var(--mcp-border)] flex items-center justify-center text-[10px] font-bold shrink-0">
+        {token.symbol.slice(0, 2)}
+      </div>
+    );
+  }
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={token.image} alt={token.symbol} className="w-6 h-6 rounded-full shrink-0" onError={() => setFailed(true)} />;
+}
 
-const TOKENS: Token[] = [ETH, USDC, DAI];
+function TokenSelect({
+  token,
+  exclude,
+  onSelect,
+}: {
+  token: Token | null;
+  exclude: Token | null;
+  onSelect: (t: Token) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Token[]>([]);
+  const [loading, setLoading] = useState(false);
 
-// Manually built via OnchainKit's buildSwapTransaction (not the pre-made
-// <Swap> component) so we can append the MCPSwap Base Builder Code suffix
-// to the calldata before signing — the <Swap> component signs internally
-// and doesn't expose a dataSuffix hook, so this lower-level API is the
-// Base-recommended way to keep both official swap quoting AND attribution.
+  useEffect(() => {
+    if (!open) return;
+    const q = query.trim();
+    if (!q) {
+      setResults([]);
+      return;
+    }
+    setLoading(true);
+    const id = setTimeout(async () => {
+      try {
+        // Works identically whether the user types "USDC" or pastes a
+        // 0x... contract address — this is Base's official token search.
+        const res = await getTokens({ search: q, limit: "8" });
+        setResults(Array.isArray(res) ? (res as Token[]) : []);
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 350);
+    return () => clearTimeout(id);
+  }, [query, open]);
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-2 px-3 py-2 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm font-semibold hover:bg-black/30 shrink-0"
+      >
+        {token ? <TokenIcon token={token} /> : <div className="w-6 h-6 rounded-full bg-[var(--mcp-border)]" />}
+        {token?.symbol ?? "Select"}
+        <span className="text-[var(--mcp-text-dim)]">▾</span>
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-24 bg-black/60" onClick={() => setOpen(false)}>
+          <div
+            className="w-full max-w-[420px] rounded-2xl border border-[var(--mcp-border)] bg-[var(--mcp-surface)] p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <span className="font-bold">Select a token</span>
+              <button onClick={() => setOpen(false)} className="text-[var(--mcp-text-dim)]">✕</button>
+            </div>
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search name, symbol, or paste contract address"
+              className="w-full px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm outline-none mb-3"
+            />
+            {!query && (
+              <button
+                onClick={() => { onSelect(NATIVE_ETH); setOpen(false); }}
+                className="w-full flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-black/20 text-left"
+              >
+                <TokenIcon token={NATIVE_ETH} />
+                <div>
+                  <div className="text-sm font-semibold">{NATIVE_ETH.symbol}</div>
+                  <div className="text-xs text-[var(--mcp-text-dim)]">{NATIVE_ETH.name}</div>
+                </div>
+              </button>
+            )}
+            <div className="max-h-72 overflow-y-auto">
+              {loading && <div className="text-xs text-[var(--mcp-text-dim)] px-2 py-3">Searching…</div>}
+              {!loading && query && results.length === 0 && (
+                <div className="text-xs text-[var(--mcp-text-dim)] px-2 py-3">No tokens found.</div>
+              )}
+              {results
+                .filter((t) => t.address.toLowerCase() !== (exclude?.address ?? "").toLowerCase())
+                .map((t) => (
+                  <button
+                    key={t.address}
+                    onClick={() => { onSelect(t); setOpen(false); setQuery(""); }}
+                    className="w-full flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-black/20 text-left"
+                  >
+                    <TokenIcon token={t} />
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold">{t.symbol}</div>
+                      <div className="text-xs text-[var(--mcp-text-dim)] truncate">{t.name}</div>
+                    </div>
+                  </button>
+                ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Manually built via OnchainKit's buildSwapTransaction (not the
+// pre-made <Swap> component, which signs internally and has no hook
+// for appending the Base Builder Code suffix). ERC-20 sources need an
+// approval MINED on-chain before the swap is sent — approve and swap
+// are two separate transactions, not one, per the standard ERC-20
+// allowance pattern Base's own Swap component follows internally.
 export function SwapTab() {
   const { address, isConnected } = useAccount();
 
-  const [fromToken, setFromToken] = useState<Token>(ETH);
-  const [toToken, setToToken] = useState<Token>(USDC);
+  const [fromToken, setFromToken] = useState<Token>(NATIVE_ETH);
+  const [toToken, setToToken] = useState<Token | null>(null);
   const [amount, setAmount] = useState("0.001");
   const [quoteAmount, setQuoteAmount] = useState<string | null>(null);
   const [isQuoting, setIsQuoting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [step, setStep] = useState<"" | "approving" | "swapping">("");
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
+  const [confirmed, setConfirmed] = useState(false);
 
   const { sendTransactionAsync } = useSendTransaction();
-  const { isLoading: isConfirming, isSuccess: isConfirmed } =
-    useWaitForTransactionReceipt({ hash: txHash });
+
+  useEffect(() => {
+    getTokens({ search: DEFAULT_TO_SYMBOL, limit: "1" })
+      .then((res) => { if (Array.isArray(res) && res[0]) setToToken(res[0] as Token); })
+      .catch(() => {});
+  }, []);
 
   const fetchQuote = useCallback(async () => {
-    if (!address || !amount || Number(amount) <= 0) {
+    if (!address || !toToken || !amount || Number(amount) <= 0) {
       setQuoteAmount(null);
       return;
     }
@@ -75,14 +186,10 @@ export function SwapTab() {
         from: fromToken,
         to: toToken,
         amount,
-        useAggregator: false, // Uniswap V3 default, matches Base docs recommendation
+        useAggregator: true,
         fromAddress: address,
       });
-      if ("quote" in result) {
-        setQuoteAmount(result.quote.toAmount ?? null);
-      } else {
-        setQuoteAmount(null);
-      }
+      setQuoteAmount("quote" in result ? result.quote.toAmount ?? null : null);
     } catch {
       setQuoteAmount(null);
     } finally {
@@ -91,27 +198,29 @@ export function SwapTab() {
   }, [address, amount, fromToken, toToken]);
 
   useEffect(() => {
-    const id = setTimeout(fetchQuote, 500); // debounce while typing
+    const id = setTimeout(fetchQuote, 500);
     return () => clearTimeout(id);
   }, [fetchQuote]);
 
   function swapDirection() {
+    if (!toToken) return;
     setFromToken(toToken);
     setToToken(fromToken);
     setQuoteAmount(null);
   }
 
   async function handleSwap() {
-    if (!address) return;
+    if (!address || !toToken) return;
     setError(null);
     setTxHash(undefined);
+    setConfirmed(false);
     setIsSubmitting(true);
     try {
-      const result = await buildSwapTransaction({
+      let result = await buildSwapTransaction({
         from: fromToken,
         to: toToken,
         amount,
-        useAggregator: false,
+        useAggregator: true,
         fromAddress: address,
       });
 
@@ -119,16 +228,37 @@ export function SwapTab() {
         throw new Error(result.error ?? "Could not build swap transaction.");
       }
 
-      // ERC-20 sources need an approval first (native ETH does not).
       if (result.approveTransaction?.data) {
+        setStep("approving");
         const approveHash = await sendTransactionAsync({
           to: result.approveTransaction.to as `0x${string}`,
           data: withBuilderSuffix(result.approveTransaction.data as `0x${string}`),
           chainId: CHAIN_ID,
         });
         setTxHash(approveHash);
+        // Wait for the approval to actually be mined before sending the
+        // swap — this is the step that was missing before, and why
+        // token → ETH swaps failed while ETH → token (no approval
+        // needed) worked fine.
+        await waitForTransactionReceipt(wagmiConfig, { hash: approveHash });
+
+        // Re-quote: the swap tx built above now has a STALE price/minAmountOut
+        // after waiting for the approve to mine (price moves during that
+        // delay) — this staleness is exactly why token → ETH reverted while
+        // ETH → token (no approve step, no delay) always worked fine.
+        result = await buildSwapTransaction({
+          from: fromToken,
+          to: toToken,
+          amount,
+          useAggregator: true,
+          fromAddress: address,
+        });
+        if (!("transaction" in result)) {
+          throw new Error(result.error ?? "Could not rebuild swap transaction after approval.");
+        }
       }
 
+      setStep("swapping");
       const swapHash = await sendTransactionAsync({
         to: result.transaction.to as `0x${string}`,
         data: withBuilderSuffix(result.transaction.data as `0x${string}`),
@@ -136,19 +266,22 @@ export function SwapTab() {
         chainId: CHAIN_ID,
       });
       setTxHash(swapHash);
+      await waitForTransactionReceipt(wagmiConfig, { hash: swapHash });
+      setConfirmed(true);
     } catch (e) {
       const err = e as { shortMessage?: string; message?: string };
       setError(err.shortMessage || err.message || "Swap failed. Please try again.");
     } finally {
+      setStep("");
       setIsSubmitting(false);
     }
   }
 
-  const busy = isSubmitting || isConfirming;
   const displayQuote =
-    quoteAmount !== null
-      ? (Number(quoteAmount) / 10 ** toToken.decimals).toFixed(6)
-      : null;
+    quoteAmount !== null && toToken ? (Number(quoteAmount) / 10 ** toToken.decimals).toFixed(6) : null;
+
+  const loadingText =
+    step === "approving" ? "Approve in wallet..." : step === "swapping" ? "Confirm swap in wallet..." : "Waiting...";
 
   return (
     <div className="w-full max-w-[440px] rounded-3xl border border-[var(--mcp-border)] bg-[var(--mcp-surface)] p-6">
@@ -167,21 +300,9 @@ export function SwapTab() {
           min={0}
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
-          className="flex-1 px-3.5 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold outline-none"
+          className="flex-1 min-w-0 px-3.5 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold outline-none"
         />
-        <select
-          value={fromToken.symbol}
-          onChange={(e) =>
-            setFromToken(TOKENS.find((t) => t.symbol === e.target.value) ?? ETH)
-          }
-          className="px-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm font-semibold outline-none"
-        >
-          {TOKENS.map((t) => (
-            <option key={t.symbol} value={t.symbol}>
-              {t.symbol}
-            </option>
-          ))}
-        </select>
+        <TokenSelect token={fromToken} exclude={toToken} onSelect={setFromToken} />
       </div>
 
       <div className="flex justify-center -my-1 relative z-10">
@@ -196,22 +317,10 @@ export function SwapTab() {
 
       <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5 mt-1">Buy</div>
       <div className="flex gap-2 mb-3">
-        <div className="flex-1 px-3.5 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold">
+        <div className="flex-1 min-w-0 px-3.5 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold truncate">
           {isQuoting ? "…" : displayQuote ?? "—"}
         </div>
-        <select
-          value={toToken.symbol}
-          onChange={(e) =>
-            setToToken(TOKENS.find((t) => t.symbol === e.target.value) ?? USDC)
-          }
-          className="px-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm font-semibold outline-none"
-        >
-          {TOKENS.map((t) => (
-            <option key={t.symbol} value={t.symbol}>
-              {t.symbol}
-            </option>
-          ))}
-        </select>
+        <TokenSelect token={toToken} exclude={fromToken} onSelect={setToToken} />
       </div>
 
       <InfoBox
@@ -223,18 +332,16 @@ export function SwapTab() {
       />
 
       <ErrorMessage message={error} />
-      {isConfirmed && txHash && (
-        <TxLink label="✅ Swapped!" href={`https://basescan.org/tx/${txHash}`} />
-      )}
+      {confirmed && txHash && <TxLink label="✅ Swapped!" href={`https://basescan.org/tx/${txHash}`} />}
 
       <ActionButton
         onClick={handleSwap}
-        disabled={!isConnected || !amount || Number(amount) <= 0}
-        loading={busy}
-        loadingText={isSubmitting ? "Confirm in wallet..." : "Waiting confirmation..."}
+        disabled={!isConnected || !toToken || !amount || Number(amount) <= 0}
+        loading={isSubmitting}
+        loadingText={loadingText}
         className="mt-1"
       >
-        {!isConnected ? "Connect Wallet to Swap" : `Swap ${fromToken.symbol} → ${toToken.symbol}`}
+        {!isConnected ? "Connect Wallet to Swap" : `Swap ${fromToken.symbol} → ${toToken?.symbol ?? "..."}`}
       </ActionButton>
     </div>
   );
