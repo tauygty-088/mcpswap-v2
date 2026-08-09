@@ -60,7 +60,7 @@ export function SwapTab() {
 
   const [fromToken, setFromToken] = useState<Token>(ETH);
   const [toToken, setToToken] = useState<Token>(USDC);
-  const [amount, setAmount] = useState("0.001");
+  const [amount, setAmount] = useState("");
   const [quoteAmount, setQuoteAmount] = useState<string | null>(null);
   const [fromAmountUSD, setFromAmountUSD] = useState<string | null>(null);
   const [toAmountUSD, setToAmountUSD] = useState<string | null>(null);
@@ -139,6 +139,24 @@ export function SwapTab() {
     setPickerFor(null);
   }
 
+  // getTokens() has no built-in spam/impersonation filter (per Base docs —
+  // it's a plain name/symbol/address search over every deployed contract).
+  // Anyone can deploy a token with symbol "ETH" pointing at garbage, and
+  // since real native ETH isn't a contract at all, it may not even appear
+  // in search results — leaving only impostors to pick from. Two guards:
+  // (1) always show the real, hardcoded native ETH pinned at the top,
+  // regardless of what the search returns, and (2) drop any search result
+  // that claims the "ETH" symbol but isn't the genuine native asset.
+  // Filter both symbol AND name — the impostor from testing used name
+  // "Ethereum" with a different symbol ("SOETH") specifically to slip
+  // past a symbol-only check. Anyone can set either field to anything on
+  // their own contract, so both need checking.
+  const filteredSearchResults = searchResults.filter((t) => {
+    if (t.address === "") return true; // never filter the genuine native entry
+    const isImpostor = t.symbol.toUpperCase() === "ETH" || t.name.toLowerCase() === "ethereum";
+    return !isImpostor;
+  });
+
   const fetchQuote = useCallback(async () => {
     if (!address || !amount || Number(amount) <= 0) {
       setQuoteAmount(null);
@@ -187,6 +205,23 @@ export function SwapTab() {
     setFromToken(toToken);
     setToToken(fromToken);
     setQuoteAmount(null);
+  }
+
+  // Native <input type="number"> renders using the OS/browser locale's
+  // decimal separator (e.g. "0,001" on vi-VN) even though the underlying
+  // value is always dot-based — confusing, and if a user types a comma
+  // to match what they see, type="number" silently rejects it. Using
+  // type="text" + this filter keeps the displayed and stored value
+  // always dot-based, regardless of system locale — same approach
+  // OnchainKit's own SwapAmountInput uses internally.
+  function handleAmountChange(raw: string) {
+    let next = raw.replace(",", "."); // tolerate a pasted/typed comma
+    next = next.replace(/[^0-9.]/g, ""); // digits and dot only
+    const firstDot = next.indexOf(".");
+    if (firstDot !== -1) {
+      next = next.slice(0, firstDot + 1) + next.slice(firstDot + 1).replace(/\./g, "");
+    }
+    setAmount(next);
   }
 
   async function handleSwap() {
@@ -291,10 +326,11 @@ export function SwapTab() {
       </div>
       <div className="flex gap-2 mb-1">
         <input
-          type="number"
-          min={0}
+          type="text"
+          inputMode="decimal"
           value={amount}
-          onChange={(e) => setAmount(e.target.value)}
+          onChange={(e) => handleAmountChange(e.target.value)}
+          placeholder="0"
           className="flex-1 px-4 py-4 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-2xl font-bold outline-none"
         />
         <button
@@ -311,7 +347,7 @@ export function SwapTab() {
         </button>
       </div>
       <div className="text-xs text-[var(--mcp-text-dim)] mb-3">
-        {fromAmountUSD ? `$${Number(fromAmountUSD).toFixed(2)}` : "\u00A0"}
+        {fromAmountUSD ? `$${Number(fromAmountUSD).toFixed(2)}` : "$0.00"}
       </div>
 
       <div className="flex justify-center -my-1 relative z-10">
@@ -334,7 +370,7 @@ export function SwapTab() {
       </div>
       <div className="flex gap-2 mb-1">
         <div className="flex-1 px-4 py-4 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-2xl font-bold">
-          {isQuoting ? "…" : displayQuote ?? "—"}
+          {isQuoting ? "…" : displayQuote ?? "0"}
         </div>
         <button
           type="button"
@@ -350,7 +386,7 @@ export function SwapTab() {
         </button>
       </div>
       <div className="text-xs text-[var(--mcp-text-dim)] mb-4">
-        {toAmountUSD ? `$${Number(toAmountUSD).toFixed(2)}` : "\u00A0"}
+        {toAmountUSD ? `$${Number(toAmountUSD).toFixed(2)}` : "$0.00"}
       </div>
 
       <ErrorMessage message={quoteWarning ? `⚠️ ${quoteWarning}` : null} />
@@ -398,18 +434,35 @@ export function SwapTab() {
               className="w-full px-3.5 py-2.5 mb-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm outline-none"
             />
             <div className="overflow-y-auto flex-1 -mx-1">
+              {/* Always-available genuine ETH — never dependent on search
+                  results, so a fake "ETH"-symbol token can never be the
+                  only option. */}
+              {ETH.address !== (pickerFor === "from" ? toToken.address : fromToken.address) && (
+                <button
+                  type="button"
+                  onClick={() => pickToken(ETH)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-black/20 text-left"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={ETH.image} alt="" className="w-8 h-8 rounded-full" />
+                  <div className="flex flex-col">
+                    <span className="text-sm font-semibold">{ETH.name}</span>
+                    <span className="text-xs text-[var(--mcp-text-dim)]">{ETH.symbol}</span>
+                  </div>
+                </button>
+              )}
               {isSearchingTokens && (
                 <div className="px-3 py-4 text-sm text-[var(--mcp-text-dim)]">
                   Searching Base tokens…
                 </div>
               )}
-              {!isSearchingTokens && searchResults.length === 0 && (
+              {!isSearchingTokens && filteredSearchResults.length === 0 && (
                 <div className="px-3 py-4 text-sm text-[var(--mcp-text-dim)]">
                   No tokens found.
                 </div>
               )}
               {!isSearchingTokens &&
-                searchResults.map((t) => (
+                filteredSearchResults.map((t) => (
                   <button
                     key={t.address || t.symbol}
                     type="button"
