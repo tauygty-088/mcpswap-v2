@@ -443,8 +443,10 @@ export function SwapTab() {
                   onClick={() => pickToken(ETH)}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-black/20 text-left"
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={ETH.image} alt="" className="w-8 h-8 rounded-full" />
+                  {ETH.image && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={ETH.image} alt="" className="w-8 h-8 rounded-full" />
+                  )}
                   <div className="flex flex-col">
                     <span className="text-sm font-semibold">{ETH.name}</span>
                     <span className="text-xs text-[var(--mcp-text-dim)]">{ETH.symbol}</span>
