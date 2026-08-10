@@ -69,10 +69,16 @@ export function SwapTab() {
   const [error, setError] = useState<string | null>(null);
   const [quoteWarning, setQuoteWarning] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
+  // Separate from txHash on purpose: txHash tracks whichever tx is
+  // currently in flight (approve OR swap) purely to drive the busy/
+  // loading state below. swapHash is set ONLY once the real swap tx
+  // (never the approve tx) is sent, so the "✅ Swapped!" banner can't
+  // fire early just because the approve step happened to confirm first.
+  const [swapHash, setSwapHash] = useState<`0x${string}` | undefined>();
 
   const { sendTransactionAsync } = useSendTransaction();
-  const { isLoading: isConfirming, isSuccess: isConfirmed } =
-    useWaitForTransactionReceipt({ hash: txHash });
+  const { isLoading: isConfirming } = useWaitForTransactionReceipt({ hash: txHash });
+  const { isSuccess: isSwapConfirmed } = useWaitForTransactionReceipt({ hash: swapHash });
 
   // Read-only balance display — does not touch swap/signing logic at all.
   const isFromNative = !fromToken.address;
@@ -91,11 +97,11 @@ export function SwapTab() {
   // Re-fetch both balances once a swap confirms on-chain, so the numbers
   // update automatically without the user needing to refresh the page.
   useEffect(() => {
-    if (isConfirmed) {
+    if (isSwapConfirmed) {
       refetchFromBalance();
       refetchToBalance();
     }
-  }, [isConfirmed, refetchFromBalance, refetchToBalance]);
+  }, [isSwapConfirmed, refetchFromBalance, refetchToBalance]);
 
   // Token picker modal — uses OnchainKit's official getTokens() search API
   // (same data source the Base-standard <Swap> component uses) so users can
@@ -228,6 +234,7 @@ export function SwapTab() {
     if (!address) return;
     setError(null);
     setTxHash(undefined);
+    setSwapHash(undefined);
     setIsSubmitting(true);
     try {
       let result = await buildSwapTransaction({
@@ -280,13 +287,14 @@ export function SwapTab() {
         }
       }
 
-      const swapHash = await sendTransactionAsync({
+      const finalSwapTxHash = await sendTransactionAsync({
         to: result.transaction.to as `0x${string}`,
         data: withBuilderSuffix(result.transaction.data as `0x${string}`),
         value: BigInt(result.transaction.value || 0),
         chainId: CHAIN_ID,
       });
-      setTxHash(swapHash);
+      setTxHash(finalSwapTxHash);
+      setSwapHash(finalSwapTxHash); // only set here — never on the approve tx
     } catch (e) {
       const err = e as { shortMessage?: string; message?: string };
       setError(err.shortMessage || err.message || "Swap failed. Please try again.");
@@ -391,8 +399,8 @@ export function SwapTab() {
 
       <ErrorMessage message={quoteWarning ? `⚠️ ${quoteWarning}` : null} />
       <ErrorMessage message={error} />
-      {isConfirmed && txHash && (
-        <TxLink label="✅ Swapped!" href={`https://basescan.org/tx/${txHash}`} />
+      {isSwapConfirmed && swapHash && (
+        <TxLink label="✅ Swapped!" href={`https://basescan.org/tx/${swapHash}`} />
       )}
 
       <ActionButton
