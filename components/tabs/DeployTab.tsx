@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   useAccount,
   usePublicClient,
@@ -50,7 +50,7 @@ export function DeployTab() {
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [supply, setSupply] = useState("1000");
-  const [price, setPrice] = useState("0.001");
+  const [price, setPrice] = useState("");
   const [deployError, setDeployError] = useState<string | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployTxHash, setDeployTxHash] = useState<`0x${string}` | undefined>();
@@ -96,7 +96,7 @@ export function DeployTab() {
     const trimmedName = name.trim();
     const trimmedSymbol = symbol.trim().toUpperCase();
     const maxSupply = parseInt(supply);
-    const priceEth = parseFloat(price) || 0;
+    const priceEth = parseFloat(price.replace(",", ".")) || 0;
     if (!trimmedName || !trimmedSymbol || !maxSupply) {
       setDeployError("Please fill in all fields");
       return;
@@ -156,6 +156,7 @@ export function DeployTab() {
       if (newAddr) {
         setDeployedAddress(newAddr);
         setDeployedName(trimmedName);
+        setMintPriceWei(priceWei);
       }
     } catch (e) {
       const err = e as { shortMessage?: string; message?: string };
@@ -165,27 +166,12 @@ export function DeployTab() {
     }
   }
 
-  async function loadMintStepPrice(contractAddress: `0x${string}`) {
-    if (!publicClient) return;
-    try {
-      const result = await publicClient.call({ to: contractAddress, data: "0xf9a9d510" });
-      if (result.data) { setMintPriceWei(BigInt(result.data)); return; }
-    } catch {
-      // fall through to alternate selector below
-    }
-    try {
-      const result = await publicClient.call({ to: contractAddress, data: "0x6817c76c" });
-      if (result.data) { setMintPriceWei(BigInt(result.data)); return; }
-    } catch {
-      setMintPriceWei(0n);
-    }
-  }
-
-  // Load the mint price as soon as a collection is deployed.
-  useEffect(() => {
-    if (deployedAddress) loadMintStepPrice(deployedAddress); // eslint-disable-line react-hooks/set-state-in-effect -- fetches external on-chain price once the collection address is known
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deployedAddress]);
+  // Mint price for step 2 is not read back from chain — it's carried over
+  // directly from the value we already sent to createCollection() in
+  // handleDeploy(), since that's the exact number the contract was
+  // constructed with. Guessing a getter selector for an arbitrary deployed
+  // collection is unreliable and was the root cause of the price staying at
+  // 0 (and therefore the Mint step failing / showing "Free mint" wrongly).
 
   async function handleMintStep() {
     if (!address || !deployedAddress) return;
@@ -312,11 +298,18 @@ export function DeployTab() {
         <div className="flex-1">
           <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5">Mint Price (ETH)</div>
           <input
-            type="number"
-            min={0}
-            step={0.0001}
+            type="text"
+            inputMode="decimal"
+            placeholder="0.001"
             value={price}
-            onChange={(e) => setPrice(e.target.value)}
+            onChange={(e) => {
+              // Accept digits, one dot or comma (normalized to dot), nothing else —
+              // avoids the native number input's locale-dependent comma parsing
+              // (e.g. Safari/Chrome on a VN-locale Mac), which silently turned the
+              // typed price into 0 for both the deploy tx and the mint step.
+              const cleaned = e.target.value.replace(",", ".").replace(/[^0-9.]/g, "");
+              setPrice(cleaned);
+            }}
             className="w-full text-center px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold outline-none"
           />
         </div>
