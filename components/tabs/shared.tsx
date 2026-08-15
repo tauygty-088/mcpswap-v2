@@ -1,3 +1,7 @@
+import { useCallback } from "react";
+import { useChainId, useSwitchChain } from "wagmi";
+import { CHAIN_ID } from "@/lib/contracts";
+
 export function ErrorMessage({ message }: { message: string | null }) {
   if (!message) return null;
   return (
@@ -77,4 +81,24 @@ export function InfoBox({ rows }: { rows: [string, React.ReactNode][] }) {
       ))}
     </div>
   );
+}
+
+
+/**
+ * Ensures the connected wallet is on Base mainnet before a transaction is
+ * sent. Returns an async function you can call (and await) right before
+ * sendTransactionAsync/writeContractAsync — if the wallet is already on
+ * Base it's a no-op, otherwise it prompts the wallet to switch chains.
+ * Added for LaunchB20Tab; does not affect Swap/Mint/Deploy/Breed, which
+ * already pass chainId directly to sendTransactionAsync themselves.
+ */
+export function useEnsureBaseChain() {
+  const chainId = useChainId();
+  const { switchChainAsync } = useSwitchChain();
+
+  return useCallback(async () => {
+    if (chainId !== CHAIN_ID) {
+      await switchChainAsync({ chainId: CHAIN_ID });
+    }
+  }, [chainId, switchChainAsync]);
 }
