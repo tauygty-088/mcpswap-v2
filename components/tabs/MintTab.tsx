@@ -103,7 +103,7 @@ export function MintTab() {
   const busy = isSubmitting || isConfirming;
 
   return (
-    <div className="w-full max-w-[540px] rounded-3xl border border-[var(--mcp-border)] bg-[var(--mcp-surface)] p-6">
+    <div className="w-full max-w-[440px] rounded-3xl border border-[var(--mcp-border)] bg-[var(--mcp-surface)] p-6">
       <div className="flex items-center justify-between mb-5">
         <span className="text-lg font-bold">Mint NFT</span>
         <div className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-[var(--mcp-border)] bg-black/20">
