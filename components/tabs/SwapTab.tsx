@@ -310,9 +310,9 @@ export function SwapTab() {
       : null;
 
   return (
-    <div className="w-full max-w-[520px] rounded-3xl border border-[var(--mcp-border)] bg-[var(--mcp-surface)] p-8">
-      <div className="flex items-center justify-between mb-6">
-        <span className="text-xl font-bold">Swap</span>
+    <div className="w-full max-w-[440px] rounded-3xl border border-[var(--mcp-border)] bg-[var(--mcp-surface)] p-6">
+      <div className="flex items-center justify-between mb-5">
+        <span className="text-lg font-bold">Swap</span>
         <div className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-[var(--mcp-border)] bg-black/20">
           <span className="w-2 h-2 rounded-full bg-blue-500" />
           Base
@@ -339,7 +339,7 @@ export function SwapTab() {
           value={amount}
           onChange={(e) => handleAmountChange(e.target.value)}
           placeholder="0"
-          className="flex-1 px-4 py-4 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-2xl font-bold outline-none"
+          className="flex-1 px-3.5 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold outline-none"
         />
         <button
           type="button"
@@ -377,7 +377,7 @@ export function SwapTab() {
         )}
       </div>
       <div className="flex gap-2 mb-1">
-        <div className="flex-1 px-4 py-4 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-2xl font-bold">
+        <div className="flex-1 px-3.5 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold">
           {isQuoting ? "…" : displayQuote ?? "0"}
         </div>
         <button
