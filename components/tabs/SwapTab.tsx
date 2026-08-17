@@ -449,19 +449,19 @@ export function SwapTab() {
           value={amount}
           onChange={(e) => handleAmountChange(e.target.value)}
           placeholder="0"
-          className="flex-1 px-3.5 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold outline-none"
+          className="flex-1 min-w-0 px-3.5 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold outline-none"
         />
         <button
           type="button"
           onClick={() => openPicker("from")}
-          className="flex items-center gap-1.5 px-4 py-2 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm font-semibold hover:bg-black/30"
+          className="flex items-center justify-center gap-1.5 px-3 py-2 min-w-[104px] flex-shrink-0 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm font-semibold hover:bg-black/30"
         >
           {fromToken.image && (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={fromToken.image} alt="" className="w-5 h-5 rounded-full" />
+            <img src={fromToken.image} alt="" className="w-5 h-5 rounded-full flex-shrink-0" />
           )}
-          {fromToken.symbol}
-          <span className="text-[var(--mcp-text-dim)]">▾</span>
+          <span className="truncate">{fromToken.symbol}</span>
+          <span className="text-[var(--mcp-text-dim)] flex-shrink-0">▾</span>
         </button>
       </div>
       <div className="text-xs text-[var(--mcp-text-dim)] mb-3">
@@ -487,20 +487,20 @@ export function SwapTab() {
         )}
       </div>
       <div className="flex gap-2 mb-1">
-        <div className="flex-1 px-3.5 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold">
+        <div className="flex-1 min-w-0 px-3.5 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold overflow-hidden text-ellipsis">
           {isQuoting ? "…" : displayQuote ?? "0"}
         </div>
         <button
           type="button"
           onClick={() => openPicker("to")}
-          className="flex items-center gap-1.5 px-4 py-2 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm font-semibold hover:bg-black/30"
+          className="flex items-center justify-center gap-1.5 px-3 py-2 min-w-[104px] flex-shrink-0 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm font-semibold hover:bg-black/30"
         >
           {toToken.image && (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={toToken.image} alt="" className="w-5 h-5 rounded-full" />
+            <img src={toToken.image} alt="" className="w-5 h-5 rounded-full flex-shrink-0" />
           )}
-          {toToken.symbol}
-          <span className="text-[var(--mcp-text-dim)]">▾</span>
+          <span className="truncate">{toToken.symbol}</span>
+          <span className="text-[var(--mcp-text-dim)] flex-shrink-0">▾</span>
         </button>
       </div>
       <div className="text-xs text-[var(--mcp-text-dim)] mb-4">
