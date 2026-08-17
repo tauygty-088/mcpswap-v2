@@ -595,10 +595,15 @@ export function SwapTab() {
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={t.image} alt="" className="w-8 h-8 rounded-full" />
                       )}
-                      <div className="flex flex-col flex-1">
+                      <div className="flex flex-col flex-1 min-w-0">
                         <span className="text-sm font-semibold">{t.name}</span>
                         <span className="text-xs text-[var(--mcp-text-dim)]">
                           {t.symbol}
+                          {t.address && (
+                            <span className="ml-1.5 opacity-70">
+                              {t.address.slice(0, 6)}...{t.address.slice(-4)}
+                            </span>
+                          )}
                         </span>
                       </div>
                       {bal !== undefined && bal > 0n && (
