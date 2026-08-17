@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useAccount, useBalance, useSendTransaction, useWaitForTransactionReceipt } from "wagmi";
+import { useAccount, useBalance, usePublicClient, useSendTransaction, useWaitForTransactionReceipt } from "wagmi";
 import { waitForTransactionReceipt } from "wagmi/actions";
 import { setOnchainKitConfig } from "@coinbase/onchainkit";
 import { buildSwapTransaction, getTokens } from "@coinbase/onchainkit/api";
@@ -55,8 +55,48 @@ const USDC: Token = {
 // hit an allowance error). This is opposite to the <Swap> component's own
 // documented default of false, so don't "correct" it back without testing
 // again first.
+// Minimal ABI for reading ERC-20 balances in the token picker (balance
+// sort + display only — completely separate from the swap/approve ABI
+// calls in handleSwap below).
+const ERC20_BALANCE_ABI = [
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+const CUSTOM_TOKENS_STORAGE_KEY = "mcpswap-custom-tokens";
+
+function loadCustomTokens(): Token[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_TOKENS_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomToken(token: Token) {
+  if (typeof window === "undefined") return;
+  if (!token.address) return; // never persist the native ETH pseudo-entry
+  try {
+    const existing = loadCustomTokens();
+    if (existing.some((t) => t.address.toLowerCase() === token.address.toLowerCase())) return;
+    const updated = [...existing, token];
+    window.localStorage.setItem(CUSTOM_TOKENS_STORAGE_KEY, JSON.stringify(updated));
+  } catch {
+    // Storage full/unavailable — non-critical, just skip persisting.
+  }
+}
+
 export function SwapTab() {
   const { address, isConnected } = useAccount();
+  const publicClient = usePublicClient();
 
   const [fromToken, setFromToken] = useState<Token>(ETH);
   const [toToken, setToToken] = useState<Token>(USDC);
@@ -111,10 +151,13 @@ export function SwapTab() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Token[]>([]);
   const [isSearchingTokens, setIsSearchingTokens] = useState(false);
+  const [customTokens, setCustomTokens] = useState<Token[]>([]);
+  const [pickerBalances, setPickerBalances] = useState<Record<string, bigint>>({});
 
   const openPicker = useCallback((side: "from" | "to") => {
     setPickerFor(side);
     setSearchQuery("");
+    setCustomTokens(loadCustomTokens());
   }, []);
 
   useEffect(() => {
@@ -142,6 +185,7 @@ export function SwapTab() {
   function pickToken(token: Token) {
     if (pickerFor === "from") setFromToken(token);
     if (pickerFor === "to") setToToken(token);
+    saveCustomToken(token); // remembered for next time this picker opens
     setPickerFor(null);
   }
 
@@ -157,10 +201,76 @@ export function SwapTab() {
   // "Ethereum" with a different symbol ("SOETH") specifically to slip
   // past a symbol-only check. Anyone can set either field to anything on
   // their own contract, so both need checking.
-  const filteredSearchResults = searchResults.filter((t) => {
+  const combinedResults =
+    searchQuery.trim() === ""
+      ? [
+          ...customTokens,
+          ...searchResults.filter(
+            (t) => !customTokens.some((c) => c.address.toLowerCase() === t.address.toLowerCase())
+          ),
+        ]
+      : searchResults;
+
+  const filteredSearchResults = combinedResults.filter((t) => {
     if (t.address === "") return true; // never filter the genuine native entry
     const isImpostor = t.symbol.toUpperCase() === "ETH" || t.name.toLowerCase() === "ethereum";
     return !isImpostor;
+  });
+
+  // Query on-chain balances for every token currently shown in the picker
+  // (multicall, one round-trip) so tokens the user actually holds can be
+  // sorted to the top. Purely additive — does not touch handleSwap/quote.
+  useEffect(() => {
+    if (pickerFor === null || !address || !publicClient) return;
+    let cancelled = false;
+    (async () => {
+      const erc20Tokens = filteredSearchResults.filter((t) => t.address !== "");
+      const hasNative = filteredSearchResults.some((t) => t.address === "");
+      const results: Record<string, bigint> = {};
+      try {
+        if (erc20Tokens.length > 0) {
+          const calls = await publicClient.multicall({
+            contracts: erc20Tokens.map((t) => ({
+              address: t.address as `0x${string}`,
+              abi: ERC20_BALANCE_ABI,
+              functionName: "balanceOf",
+              args: [address],
+            })),
+            allowFailure: true,
+          });
+          erc20Tokens.forEach((t, i) => {
+            const r = calls[i];
+            results[t.address.toLowerCase()] = r.status === "success" ? (r.result as bigint) : 0n;
+          });
+        }
+        if (hasNative) {
+          results["native"] = await publicClient.getBalance({ address });
+        }
+        if (!cancelled) setPickerBalances(results);
+      } catch {
+        if (!cancelled) setPickerBalances({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerFor, address, publicClient, searchResults, customTokens]);
+
+  function balanceKey(t: Token) {
+    return t.address === "" ? "native" : t.address.toLowerCase();
+  }
+
+  // Tokens with a nonzero balance first (largest first), everything else
+  // keeps its original order (popular/custom/search relevance) below.
+  const sortedSearchResults = [...filteredSearchResults].sort((a, b) => {
+    const balA = pickerBalances[balanceKey(a)] ?? 0n;
+    const balB = pickerBalances[balanceKey(b)] ?? 0n;
+    if (balA > 0n && balB === 0n) return -1;
+    if (balA === 0n && balB > 0n) return 1;
+    if (balA > balB) return -1;
+    if (balA < balB) return 1;
+    return 0;
   });
 
   const fetchQuote = useCallback(async () => {
@@ -466,31 +576,39 @@ export function SwapTab() {
                   Searching Base tokens…
                 </div>
               )}
-              {!isSearchingTokens && filteredSearchResults.length === 0 && (
+              {!isSearchingTokens && sortedSearchResults.length === 0 && (
                 <div className="px-3 py-4 text-sm text-[var(--mcp-text-dim)]">
                   No tokens found.
                 </div>
               )}
               {!isSearchingTokens &&
-                filteredSearchResults.map((t) => (
-                  <button
-                    key={t.address || t.symbol}
-                    type="button"
-                    onClick={() => pickToken(t)}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-black/20 text-left"
-                  >
-                    {t.image && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={t.image} alt="" className="w-8 h-8 rounded-full" />
-                    )}
-                    <div className="flex flex-col">
-                      <span className="text-sm font-semibold">{t.name}</span>
-                      <span className="text-xs text-[var(--mcp-text-dim)]">
-                        {t.symbol}
-                      </span>
-                    </div>
-                  </button>
-                ))}
+                sortedSearchResults.map((t) => {
+                  const bal = pickerBalances[balanceKey(t)];
+                  return (
+                    <button
+                      key={t.address || t.symbol}
+                      type="button"
+                      onClick={() => pickToken(t)}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-black/20 text-left"
+                    >
+                      {t.image && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={t.image} alt="" className="w-8 h-8 rounded-full" />
+                      )}
+                      <div className="flex flex-col flex-1">
+                        <span className="text-sm font-semibold">{t.name}</span>
+                        <span className="text-xs text-[var(--mcp-text-dim)]">
+                          {t.symbol}
+                        </span>
+                      </div>
+                      {bal !== undefined && bal > 0n && (
+                        <span className="text-xs text-[var(--mcp-text-dim)]">
+                          {(Number(bal) / 10 ** t.decimals).toFixed(4)}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
             </div>
           </div>
         </div>
