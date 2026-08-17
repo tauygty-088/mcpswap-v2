@@ -432,15 +432,32 @@ export function SwapTab() {
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-xs text-[var(--mcp-text-dim)]">Sell</span>
         {fromBalance && (
-          <button
-            type="button"
-            onClick={() => setAmount(fromBalance.formatted)}
-            className="text-xs text-[var(--mcp-text-dim)] hover:text-white"
-          >
-            Balance: {Number(fromBalance.formatted).toFixed(6)}{" "}
-            <span className="underline">Max</span>
-          </button>
+          <div className="flex items-center gap-1.5">
+            {[25, 50, 75].map((pct) => (
+              <button
+                key={pct}
+                type="button"
+                onClick={() => {
+                  const amt = (Number(fromBalance.formatted) * pct) / 100;
+                  setAmount(amt.toString());
+                }}
+                className="px-2 py-0.5 text-xs rounded-full border border-[var(--mcp-border)] text-[var(--mcp-text-dim)] hover:text-white hover:border-white/40"
+              >
+                {pct}%
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => setAmount(fromBalance.formatted)}
+              className="px-2 py-0.5 text-xs rounded-full border border-[var(--mcp-border)] text-[var(--mcp-text-dim)] hover:text-white hover:border-white/40"
+            >
+              Max
+            </button>
+          </div>
         )}
+      </div>
+      <div className="text-xs text-[var(--mcp-text-dim)] -mt-0.5 mb-1">
+        {fromBalance ? `Balance: ${Number(fromBalance.formatted).toFixed(6)}` : "\u00A0"}
       </div>
       <div className="flex gap-2 mb-1">
         <input
