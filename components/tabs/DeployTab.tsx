@@ -18,7 +18,7 @@ import {
   TRANSFER_FROM_ABI,
 } from "@/lib/contracts";
 import { extractTransferTokenId, withBuilderSuffix } from "@/lib/txHelpers";
-import { ActionButton, ErrorMessage, InfoBox, TxLink } from "./shared";
+import { ActionButton, ErrorMessage, TxLink } from "./shared";
 
 async function pinFileToIPFS(file: File): Promise<string> {
   const form = new FormData();
@@ -52,6 +52,32 @@ export function DeployTab() {
   const [symbol, setSymbol] = useState("");
   const [supply, setSupply] = useState("1000");
   const [price, setPrice] = useState("");
+
+  // ETH/USD, fetched once from DeFiLlama's free public price API — used
+  // only to show a $ estimate under the price fields below. If this
+  // fails (network hiccup, API down), ethUsdPrice stays null and the
+  // $ line is simply hidden; it never blocks deploy/mint.
+  const [ethUsdPrice, setEthUsdPrice] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("https://coins.llama.fi/prices/current/base:0x4200000000000000000000000000000000000006")
+      .then((res) => res.json())
+      .then((data) => {
+        const p = data?.coins?.["base:0x4200000000000000000000000000000000000006"]?.price;
+        if (!cancelled && typeof p === "number") setEthUsdPrice(p);
+      })
+      .catch(() => {
+        // Non-critical — just skip the $ display.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function ethToUsd(ethAmount: number): string | null {
+    if (ethUsdPrice === null || !Number.isFinite(ethAmount)) return null;
+    return (ethAmount * ethUsdPrice).toFixed(2);
+  }
   const [deployError, setDeployError] = useState<string | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployTxHash, setDeployTxHash] = useState<`0x${string}` | undefined>();
@@ -62,6 +88,11 @@ export function DeployTab() {
   // ── Step 2: Mint from the newly deployed collection ──
   const [mintQty, setMintQty] = useState(1);
   const [mintPriceWei, setMintPriceWei] = useState<bigint>(0n);
+  // Distinguishes "genuinely a free mint" from "price read failed" — the
+  // old code conflated these by defaulting to 0 on any read error, which
+  // showed "Free mint" for paid collections whenever the RPC lagged right
+  // after a fresh deploy.
+  const [mintPriceUnknown, setMintPriceUnknown] = useState(false);
   const [mintError, setMintError] = useState<string | null>(null);
   const [isMinting, setIsMinting] = useState(false);
   const [mintTxHash, setMintTxHash] = useState<`0x${string}` | undefined>();
@@ -168,18 +199,30 @@ export function DeployTab() {
 
   async function loadMintStepPrice(contractAddress: `0x${string}`) {
     if (!publicClient) return;
-    try {
-      const result = (await publicClient.readContract({
-        address: contractAddress,
-        abi: MINT_PRICE_ABI,
-        functionName: "mintPrice",
-      })) as bigint;
-      setMintPriceWei(result);
-    } catch {
-      // Collection may have been deployed with 0 price, or the read
-      // genuinely failed — default to 0 (shown as "Free mint") rather
-      // than leaving the mint step stuck on a stale/guessed value.
-      setMintPriceWei(0n);
+    // A freshly deployed contract can briefly lag behind on some RPC
+    // nodes right after the tx mines. Retry a few times before giving up,
+    // instead of assuming the price is 0 on the first failure.
+    const MAX_ATTEMPTS = 4;
+    const RETRY_DELAY_MS = 1200;
+    setMintPriceUnknown(false);
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const result = (await publicClient.readContract({
+          address: contractAddress,
+          abi: MINT_PRICE_ABI,
+          functionName: "mintPrice",
+        })) as bigint;
+        setMintPriceWei(result);
+        return;
+      } catch {
+        if (attempt === MAX_ATTEMPTS) {
+          // Read genuinely failed after retries — show "unknown" rather
+          // than silently defaulting to 0 / "Free mint".
+          setMintPriceUnknown(true);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      }
     }
   }
 
@@ -322,16 +365,11 @@ export function DeployTab() {
             placeholder="0.001"
             className="w-full text-center px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold outline-none placeholder:text-[var(--mcp-text-dim)] placeholder:font-normal"
           />
+          <div className="text-xs text-[var(--mcp-text-dim)] text-center mt-1">
+            {ethToUsd(parseFloat(price) || 0) !== null ? `$${ethToUsd(parseFloat(price) || 0)}` : "\u00A0"}
+          </div>
         </div>
       </div>
-
-      <InfoBox
-        rows={[
-          ["Network", "Base Mainnet"],
-          ["You pay", "Deploy gas only"],
-          ["Ownership", "100% yours — no admin access for MCPSwap"],
-        ]}
-      />
 
       <ErrorMessage message={deployError} />
       {deployConfirmed && deployTxHash && (
@@ -384,7 +422,12 @@ export function DeployTab() {
           <div className="flex-1">
             <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5">Total Price</div>
             <div className="px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-lg font-bold text-center">
-              {mintStepUnlocked ? (mintTotalEth === 0 ? "Free mint" : `${mintTotalEth} ETH`) : "—"}
+              {mintStepUnlocked ? (mintPriceUnknown ? "—" : mintTotalEth === 0 ? "Free mint" : `${mintTotalEth} ETH`) : "—"}
+            </div>
+            <div className="text-xs text-[var(--mcp-text-dim)] text-center mt-1">
+              {mintStepUnlocked && mintTotalEth > 0 && ethToUsd(mintTotalEth) !== null
+                ? `$${ethToUsd(mintTotalEth)}`
+                : "\u00A0"}
             </div>
           </div>
         </div>
@@ -394,7 +437,7 @@ export function DeployTab() {
 
         <ActionButton
           onClick={handleMintStep}
-          disabled={!isConnected || !mintStepUnlocked || mintedTokenId !== null}
+          disabled={!isConnected || !mintStepUnlocked || mintedTokenId !== null || mintPriceUnknown}
           loading={isMinting}
           loadingText="Minting..."
         >
