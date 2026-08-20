@@ -1,103 +1,53 @@
-// B20_BUILD_ID: launch-b20-v1
 "use client";
 
-/**
- * LaunchB20Tab — Phase 1: create a B20 Asset token via Base's native B20Factory
- * precompile, optionally mint an initial supply to the creator.
- *
- * B20 is NOT a deployable smart contract — it's a fixed precompile built into
- * every Base node (same address on every network). No Solidity, no deploy step,
- * just a direct call from the client, same as every other tab in this app.
- *
- * Every fact below (addresses, struct layout, role hashes, function signatures)
- * was read directly from the official source, not guessed:
- *   - docs.base.org/get-started/launch-b20-token
- *   - github.com/base/base-std (IB20Factory.sol, B20FactoryLib.sol, B20Constants.sol)
- *
- * Phase 1 scope: ASSET variant only. STABLECOIN variant can be added later by
- * branching on `variant` and swapping in `encodeStablecoinCreateParams`.
- */
+// LaunchB20Tab — creates a token on Base's native B20 standard.
+//
+// Two modes:
+//   1. Create only  → single createB20 tx (safe default)
+//   2. Launch + Pool → createB20 + mint + approve + Uniswap V3 seed
+//
+// Fully independent from NFT-flow tabs and Swap.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useAccount, useSendTransaction } from "wagmi";
-import { readContract, waitForTransactionReceipt } from "wagmi/actions";
+import { useCallback, useEffect, useState } from "react";
 import {
-  encodeAbiParameters,
-  encodeFunctionData,
-  keccak256,
-  parseUnits,
-  toHex,
-  type Hex,
-} from "viem";
-
-import {
-  ActionButton,
-  ErrorMessage,
-  InfoBox,
-  Spinner,
-  TxLink,
-  useEnsureBaseChain,
-} from "./shared";
-import { withBuilderSuffix } from "@/lib/txHelpers";
-import { CHAIN_ID } from "@/lib/contracts";
+  useAccount,
+  usePublicClient,
+  useSendTransaction,
+  useWaitForTransactionReceipt,
+  useBalance,
+} from "wagmi";
+import { waitForTransactionReceipt } from "wagmi/actions";
 import { config as wagmiConfig } from "@/wagmi";
+import { CHAIN_ID } from "@/lib/contracts";
+import { withBuilderSuffix } from "@/lib/txHelpers";
+import {
+  B20_FACTORY_ABI,
+  B20_FACTORY_ADDRESS,
+  B20_TOKEN_ABI,
+  B20_VARIANT,
+  MAX_ASSET_DECIMALS,
+  MIN_ASSET_DECIMALS,
+  MINT_ROLE,
+  encodeAssetCreateParams,
+  encodeStablecoinCreateParams,
+  randomSalt,
+  type B20VariantKey,
+} from "@/lib/b20";
+import { encodeFunctionData, keccak256, parseEther, parseUnits, toBytes } from "viem";
+import {
+  ERC20_APPROVE_ABI,
+  MAX_TICK,
+  MIN_TICK,
+  POOL_FEE,
+  POSITION_MANAGER,
+  POSITION_MANAGER_ABI,
+  WETH_BASE,
+  computeSqrtPriceX96,
+  sortTokensAndAmounts,
+} from "@/lib/uniswapV3";
+import { ActionButton, ErrorMessage, InfoBox, TxLink } from "./shared";
 
-// ---------------------------------------------------------------------------
-// B20 precompile addresses — fixed, identical on every Base network.
-// Source: docs.base.org/get-started/launch-b20-token
-// ---------------------------------------------------------------------------
-
-const B20_FACTORY_ADDRESS = "0xB20f000000000000000000000000000000000000" as const;
-const ACTIVATION_REGISTRY_ADDRESS = "0x8453000000000000000000000000000000000001" as const;
-
-/** B20Variant enum from IB20Factory.sol. Phase 1 only uses ASSET. */
-const B20_VARIANT_ASSET = 0;
-
-/** Feature id the Activation Registry checks. Source: launch-b20-token quickstart. */
-const B20_ASSET_FEATURE_ID = keccak256(toHex("base.b20_asset"));
-
-/** MINT_ROLE = keccak256("MINT_ROLE"). Source: B20Constants.sol. */
-const MINT_ROLE = keccak256(toHex("MINT_ROLE"));
-
-/** type(uint128).max — the "no cap" sentinel. Source: B20Constants.sol MAX_SUPPLY_CAP. */
-const NO_SUPPLY_CAP = (1n << 128n) - 1n;
-
-const MIN_ASSET_DECIMALS = 6;
-const MAX_ASSET_DECIMALS = 18;
-
-// ---------------------------------------------------------------------------
-// Minimal ABI fragments — only what this tab calls.
-// ---------------------------------------------------------------------------
-
-const CREATE_B20_ABI = [
-  {
-    type: "function",
-    name: "createB20",
-    stateMutability: "payable",
-    inputs: [
-      { name: "variant", type: "uint8" },
-      { name: "salt", type: "bytes32" },
-      { name: "params", type: "bytes" },
-      { name: "initCalls", type: "bytes[]" },
-    ],
-    outputs: [{ name: "token", type: "address" }],
-  },
-] as const;
-
-const GET_B20_ADDRESS_ABI = [
-  {
-    type: "function",
-    name: "getB20Address",
-    stateMutability: "view",
-    inputs: [
-      { name: "variant", type: "uint8" },
-      { name: "sender", type: "address" },
-      { name: "salt", type: "bytes32" },
-    ],
-    outputs: [{ name: "", type: "address" }],
-  },
-] as const;
-
+const ACTIVATION_REGISTRY = "0x8453000000000000000000000000000000000001" as `0x${string}`;
 const IS_ACTIVATED_ABI = [
   {
     type: "function",
@@ -108,329 +58,572 @@ const IS_ACTIVATED_ABI = [
   },
 ] as const;
 
-const GRANT_ROLE_ABI = [
-  {
-    type: "function",
-    name: "grantRole",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "role", type: "bytes32" },
-      { name: "account", type: "address" },
-    ],
-    outputs: [],
-  },
-] as const;
-
-const UPDATE_SUPPLY_CAP_ABI = [
-  {
-    type: "function",
-    name: "updateSupplyCap",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "newSupplyCap", type: "uint256" }],
-    outputs: [],
-  },
-] as const;
-
-const MINT_ABI = [
-  {
-    type: "function",
-    name: "mint",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "to", type: "address" },
-      { name: "amount", type: "uint256" },
-    ],
-    outputs: [],
-  },
-] as const;
-
-// ---------------------------------------------------------------------------
-// Encoding helpers — mirror B20FactoryLib.sol exactly (canonical encoding
-// required; the precompile rejects anything else with AbiDecodeFailed).
-// ---------------------------------------------------------------------------
-
-/**
- * Encodes a B20AssetCreateParams blob: abi.encode(struct{ uint8 version;
- * string name; string symbol; address initialAdmin; uint8 decimals }).
- * version is hardcoded to 1 (B20_ASSET_CREATE_PARAMS_VERSION).
- */
-function encodeAssetCreateParams(
-  name: string,
-  symbol: string,
-  initialAdmin: `0x${string}`,
-  decimals: number,
-): Hex {
-  return encodeAbiParameters(
-    [
-      { type: "uint8" }, // version
-      { type: "string" }, // name
-      { type: "string" }, // symbol
-      { type: "address" }, // initialAdmin
-      { type: "uint8" }, // decimals
-    ],
-    [1, name, symbol, initialAdmin, decimals],
-  );
+function activationFeatureId(v: "ASSET" | "STABLECOIN") {
+  return keccak256(toBytes(v === "ASSET" ? "base.b20_asset" : "base.b20_stablecoin"));
 }
 
-function encodeGrantRole(role: Hex, account: `0x${string}`): Hex {
-  return encodeFunctionData({ abi: GRANT_ROLE_ABI, functionName: "grantRole", args: [role, account] });
+function formatThousands(raw: string): string {
+  const digitsOnly = raw.replace(/\D/g, "");
+  if (!digitsOnly) return "";
+  return digitsOnly.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 }
 
-function encodeUpdateSupplyCap(newSupplyCap: bigint): Hex {
-  return encodeFunctionData({
-    abi: UPDATE_SUPPLY_CAP_ABI,
-    functionName: "updateSupplyCap",
-    args: [newSupplyCap],
-  });
-}
-
-/** Cryptographically random bytes32 salt, so token addresses never collide. */
-function randomSalt(): Hex {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return toHex(bytes);
-}
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
-
-type LaunchStatus = "idle" | "creating" | "minting" | "success" | "error";
+type PoolStep = "idle" | "minting" | "approving" | "creating-pool" | "done";
 
 export function LaunchB20Tab() {
   const { address, isConnected } = useAccount();
-  const ensureBaseChain = useEnsureBaseChain();
-  const { sendTransactionAsync } = useSendTransaction();
+  const publicClient = usePublicClient();
+  const { data: ethBalance } = useBalance({ address });
 
+  const [variant, setVariant] = useState<B20VariantKey>("ASSET");
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [decimals, setDecimals] = useState(18);
-  const [initialSupply, setInitialSupply] = useState("");
-  const [salt, setSalt] = useState<Hex>(() => randomSalt());
+  const [currency, setCurrency] = useState("USD");
+  const [unlimitedSupply, setUnlimitedSupply] = useState(true);
+  const [supplyCap, setSupplyCap] = useState("");
 
+  // Mode: false = Create only (default), true = also seed Uniswap V3 pool
+  const [seedPool, setSeedPool] = useState(false);
+  const [poolTokenAmount, setPoolTokenAmount] = useState("1000000");
+  const [poolEthAmount, setPoolEthAmount] = useState("");
+  const [poolStep, setPoolStep] = useState<PoolStep>("idle");
+
+  const [salt] = useState(() => randomSalt());
   const [predictedAddress, setPredictedAddress] = useState<`0x${string}` | null>(null);
-  const [featureActivated, setFeatureActivated] = useState<boolean | null>(null);
-
-  const [status, setStatus] = useState<LaunchStatus>("idle");
+  const [createdTokenAddress, setCreatedTokenAddress] = useState<`0x${string}` | null>(null);
+  const [isActivated, setIsActivated] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tokenAddress, setTokenAddress] = useState<`0x${string}` | null>(null);
-  const [txHash, setTxHash] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
 
-  // Check once whether the ASSET feature is live on this network — deploying
-  // before it's activated reverts with FeatureNotActivated (docs warning).
-  useEffect(() => {
-    let cancelled = false;
-    readContract(wagmiConfig, {
-      address: ACTIVATION_REGISTRY_ADDRESS,
-      abi: IS_ACTIVATED_ABI,
-      functionName: "isActivated",
-      args: [B20_ASSET_FEATURE_ID],
-      chainId: CHAIN_ID,
-    })
-      .then((activated) => {
-        if (!cancelled) setFeatureActivated(activated);
-      })
-      .catch(() => {
-        if (!cancelled) setFeatureActivated(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { sendTransactionAsync } = useSendTransaction();
+  const { isLoading: isConfirming, isSuccess: isConfirmed } =
+    useWaitForTransactionReceipt({ hash: txHash });
 
-  // Live-predict the deterministic token address as the form fills in.
-  useEffect(() => {
-    if (!address) {
+  const refreshPredictedAddress = useCallback(async () => {
+    if (!publicClient || !address) {
       setPredictedAddress(null);
       return;
     }
+    try {
+      const result = await publicClient.readContract({
+        address: B20_FACTORY_ADDRESS,
+        abi: B20_FACTORY_ABI,
+        functionName: "getB20Address",
+        args: [B20_VARIANT[variant], address, salt],
+      });
+      setPredictedAddress(result as `0x${string}`);
+    } catch {
+      setPredictedAddress(null);
+    }
+  }, [publicClient, address, variant, salt]);
+
+  useEffect(() => {
+    refreshPredictedAddress();
+  }, [refreshPredictedAddress]);
+
+  useEffect(() => {
+    if (!publicClient) return;
     let cancelled = false;
-    readContract(wagmiConfig, {
-      address: B20_FACTORY_ADDRESS,
-      abi: GET_B20_ADDRESS_ABI,
-      functionName: "getB20Address",
-      args: [B20_VARIANT_ASSET, address, salt],
-      chainId: CHAIN_ID,
-    })
-      .then((addr) => {
-        if (!cancelled) setPredictedAddress(addr);
+    publicClient
+      .readContract({
+        address: ACTIVATION_REGISTRY,
+        abi: IS_ACTIVATED_ABI,
+        functionName: "isActivated",
+        args: [activationFeatureId(variant)],
+      })
+      .then((result) => {
+        if (!cancelled) setIsActivated(result as boolean);
       })
       .catch(() => {
-        if (!cancelled) setPredictedAddress(null);
+        if (!cancelled) setIsActivated(null);
       });
     return () => {
       cancelled = true;
     };
-  }, [address, salt]);
+  }, [publicClient, variant]);
 
-  const canLaunch = useMemo(
-    () =>
-      isConnected &&
-      !!address &&
-      name.trim().length > 0 &&
-      symbol.trim().length > 0 &&
-      decimals >= MIN_ASSET_DECIMALS &&
-      decimals <= MAX_ASSET_DECIMALS &&
-      status !== "creating" &&
-      status !== "minting",
-    [isConnected, address, name, symbol, decimals, status],
-  );
+  function resetForm() {
+    setName("");
+    setSymbol("");
+    setDecimals(18);
+    setCurrency("USD");
+    setUnlimitedSupply(true);
+    setSupplyCap("");
+    setSeedPool(false);
+    setPoolTokenAmount("1000000");
+    setPoolEthAmount("");
+    setPoolStep("idle");
+    setCreatedTokenAddress(null);
+    setError(null);
+    setTxHash(undefined);
+  }
 
-  const handleLaunch = useCallback(async () => {
+  async function handleLaunch() {
     if (!address) return;
     setError(null);
-    setTxHash(null);
+    setTxHash(undefined);
+    setCreatedTokenAddress(null);
+    setIsSubmitting(true);
+    setPoolStep("idle");
 
     try {
-      await ensureBaseChain();
+      if (!name.trim()) throw new Error("Token name is required.");
+      if (!symbol.trim()) throw new Error("Token symbol is required.");
+      if (variant === "STABLECOIN" && !/^[A-Z]{1,12}$/.test(currency)) {
+        throw new Error("Currency code must be uppercase letters only (e.g. USD).");
+      }
 
-      // initCalls run atomically inside createB20's bootstrap window: grant
-      // ourselves MINT_ROLE (so the follow-up mint() succeeds) and leave the
-      // supply uncapped. Both bypass the token's normal role gate only
-      // during this window — see IB20Factory.createB20 dev notes.
-      const initCalls: Hex[] = [
-        encodeGrantRole(MINT_ROLE, address),
-        encodeUpdateSupplyCap(NO_SUPPLY_CAP),
-      ];
+      if (seedPool) {
+        if (!poolTokenAmount || Number(poolTokenAmount) <= 0) {
+          throw new Error("Enter how many tokens to seed the pool with.");
+        }
+        if (!poolEthAmount || Number(poolEthAmount) <= 0) {
+          throw new Error("Enter how much ETH to seed the pool with.");
+        }
+        const ethNeeded = parseEther(poolEthAmount);
+        if (ethBalance && ethBalance.value < ethNeeded) {
+          throw new Error(
+            `Not enough ETH. You need at least ${poolEthAmount} ETH for the pool (plus gas).`,
+          );
+        }
+        // Soft warning only — do not block. User decides risk.
+        // (Previously threw and prevented launch entirely.)
+      }
 
-      const params = encodeAssetCreateParams(name.trim(), symbol.trim(), address, decimals);
+      const params =
+        variant === "ASSET"
+          ? encodeAssetCreateParams(name.trim(), symbol.trim(), address, decimals)
+          : encodeStablecoinCreateParams(name.trim(), symbol.trim(), address, currency);
 
-      const createData = encodeFunctionData({
-        abi: CREATE_B20_ABI,
+      const initCalls: `0x${string}`[] = [];
+
+      initCalls.push(
+        encodeFunctionData({
+          abi: B20_TOKEN_ABI,
+          functionName: "grantRole",
+          args: [MINT_ROLE, address],
+        }),
+      );
+
+      if (!unlimitedSupply) {
+        if (!supplyCap || Number(supplyCap) <= 0) {
+          throw new Error('Enter a supply cap greater than 0, or check "No supply cap".');
+        }
+        const capUnits =
+          BigInt(supplyCap) * 10n ** BigInt(variant === "ASSET" ? decimals : 6);
+        initCalls.push(
+          encodeFunctionData({
+            abi: B20_TOKEN_ABI,
+            functionName: "updateSupplyCap",
+            args: [capUnits],
+          }),
+        );
+      }
+
+      const calldata = encodeFunctionData({
+        abi: B20_FACTORY_ABI,
         functionName: "createB20",
-        args: [B20_VARIANT_ASSET, salt, params, initCalls],
+        args: [B20_VARIANT[variant], salt, params, initCalls],
       });
 
-      setStatus("creating");
+      // Tx 1: createB20
       const createHash = await sendTransactionAsync({
         to: B20_FACTORY_ADDRESS,
-        data: withBuilderSuffix(createData),
+        data: calldata,
         chainId: CHAIN_ID,
       });
       setTxHash(createHash);
-      await waitForTransactionReceipt(wagmiConfig, { hash: createHash });
-
-      const newToken = predictedAddress;
-      if (!newToken) {
-        throw new Error("Token created, but its address could not be confirmed. Check Basescan for the transaction.");
-      }
-      setTokenAddress(newToken);
-
-      // Optional: mint the requested initial supply to the creator.
-      if (initialSupply.trim().length > 0 && Number(initialSupply) > 0) {
-        setStatus("minting");
-        const amount = parseUnits(initialSupply.trim(), decimals);
-        const mintData = encodeFunctionData({
-          abi: MINT_ABI,
-          functionName: "mint",
-          args: [address, amount],
-        });
-        const mintHash = await sendTransactionAsync({
-          to: newToken,
-          data: withBuilderSuffix(mintData),
-          chainId: CHAIN_ID,
-        });
-        setTxHash(mintHash);
-        await waitForTransactionReceipt(wagmiConfig, { hash: mintHash });
+      const receipt = await waitForTransactionReceipt(wagmiConfig, { hash: createHash });
+      if (receipt.status !== "success") {
+        throw new Error("Token creation transaction reverted.");
       }
 
-      setStatus("success");
+      const tokenAddress = predictedAddress;
+      if (!tokenAddress) {
+        throw new Error("Token created, but its address could not be confirmed. Check Basescan.");
+      }
+
+      // Surface the deterministic token address for easy copy (Base docs: getB20Address)
+      setCreatedTokenAddress(tokenAddress);
+
+      // Create-only mode ends here
+      if (!seedPool) {
+        setPoolStep("done");
+        return;
+      }
+
+      // Launch + Pool continues
+      const tokenUnits = parseUnits(poolTokenAmount, decimals);
+      const ethUnits = parseEther(poolEthAmount);
+
+      setPoolStep("minting");
+      const mintCalldata = encodeFunctionData({
+        abi: [
+          {
+            type: "function",
+            name: "mint",
+            stateMutability: "nonpayable",
+            inputs: [
+              { name: "to", type: "address" },
+              { name: "amount", type: "uint256" },
+            ],
+            outputs: [],
+          },
+        ] as const,
+        functionName: "mint",
+        args: [address, tokenUnits],
+      });
+      const mintHash = await sendTransactionAsync({
+        to: tokenAddress,
+        data: mintCalldata,
+        chainId: CHAIN_ID,
+      });
+      setTxHash(mintHash);
+      await waitForTransactionReceipt(wagmiConfig, { hash: mintHash });
+
+      setPoolStep("approving");
+      const approveCalldata = encodeFunctionData({
+        abi: ERC20_APPROVE_ABI,
+        functionName: "approve",
+        args: [POSITION_MANAGER, tokenUnits],
+      });
+      const approveHash = await sendTransactionAsync({
+        to: tokenAddress,
+        data: approveCalldata,
+        chainId: CHAIN_ID,
+      });
+      setTxHash(approveHash);
+      await waitForTransactionReceipt(wagmiConfig, { hash: approveHash });
+
+      setPoolStep("creating-pool");
+      const sorted = sortTokensAndAmounts(tokenAddress, tokenUnits, ethUnits);
+      const sqrtPriceX96 = computeSqrtPriceX96(sorted.amount0, sorted.amount1);
+
+      const createPoolCalldata = encodeFunctionData({
+        abi: POSITION_MANAGER_ABI,
+        functionName: "createAndInitializePoolIfNecessary",
+        args: [sorted.token0, sorted.token1, POOL_FEE, sqrtPriceX96],
+      });
+      const mintPositionCalldata = encodeFunctionData({
+        abi: POSITION_MANAGER_ABI,
+        functionName: "mint",
+        args: [
+          {
+            token0: sorted.token0,
+            token1: sorted.token1,
+            fee: POOL_FEE,
+            tickLower: MIN_TICK,
+            tickUpper: MAX_TICK,
+            amount0Desired: sorted.amount0,
+            amount1Desired: sorted.amount1,
+            amount0Min: 0n,
+            amount1Min: 0n,
+            recipient: address,
+            deadline: BigInt(Math.floor(Date.now() / 1000) + 1200),
+          },
+        ],
+      });
+      const refundCalldata = encodeFunctionData({
+        abi: POSITION_MANAGER_ABI,
+        functionName: "refundETH",
+        args: [],
+      });
+
+      const poolMulticallData = encodeFunctionData({
+        abi: POSITION_MANAGER_ABI,
+        functionName: "multicall",
+        args: [[createPoolCalldata, mintPositionCalldata, refundCalldata]],
+      });
+
+      const poolHash = await sendTransactionAsync({
+        to: POSITION_MANAGER,
+        data: withBuilderSuffix(poolMulticallData),
+        value: ethUnits,
+        chainId: CHAIN_ID,
+      });
+      setTxHash(poolHash);
+      await waitForTransactionReceipt(wagmiConfig, { hash: poolHash });
+      setPoolStep("done");
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Token launch failed.";
-      // A used salt means an earlier attempt with this exact form already
-      // registered a token — regenerate and let the user retry.
-      if (message.includes("TokenAlreadyExists")) {
-        setSalt(randomSalt());
-        setError("This token already exists (salt collision) — a new attempt will use a fresh address. Try again.");
-      } else {
-        setError(message);
-      }
-      setStatus("error");
+      const err = e as { shortMessage?: string; message?: string };
+      setError(err.shortMessage || err.message || "Failed to launch token. Please try again.");
+      setPoolStep("idle");
+    } finally {
+      setIsSubmitting(false);
     }
-  }, [address, ensureBaseChain, name, symbol, decimals, salt, predictedAddress, initialSupply, sendTransactionAsync]);
+  }
+
+  const busy = isSubmitting || isConfirming;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <span className="font-semibold text-lg">Launch B20 Token</span>
-        <span className="text-xs px-2 py-1 rounded-full bg-[var(--mcp-surface)] border border-[var(--mcp-border)]">
-          ● Base
-        </span>
+    <div className="w-full max-w-[440px] rounded-3xl border border-[var(--mcp-border)] bg-[var(--mcp-surface)] p-6">
+      <div className="flex items-center justify-between mb-5">
+        <span className="text-lg font-bold">Launch B20 Token</span>
+        <div className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border border-[var(--mcp-border)] bg-black/20">
+          <span className="w-2 h-2 rounded-full bg-blue-500" />
+          Base
+        </div>
       </div>
 
-      {featureActivated === false && (
-        <ErrorMessage message="B20 Asset creation is not yet activated on this network." />
+      <div className="flex gap-2 mb-4">
+        {(["ASSET", "STABLECOIN"] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            onClick={() => setVariant(v)}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border ${
+              variant === v
+                ? "border-[var(--mcp-accent)] bg-[var(--mcp-accent)]/10 text-white"
+                : "border-[var(--mcp-border)] text-[var(--mcp-text-dim)] hover:bg-black/20"
+            }`}
+          >
+            {v === "ASSET" ? "Asset" : "Stablecoin"}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-[var(--mcp-text-dim)] mb-4">
+        {variant === "ASSET"
+          ? "General-purpose token — you choose decimals (6-18). Good for in-game currencies, loyalty points, or reward tokens."
+          : "Fiat-pegged token — fixed at 6 decimals with a permanent currency code (e.g. USD). Best when integrators expect a standardized precision."}
+      </p>
+
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <div>
+          <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5">Name</div>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="My Token"
+            className="w-full px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm outline-none"
+          />
+        </div>
+        <div>
+          <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5">Symbol</div>
+          <input
+            type="text"
+            value={symbol}
+            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+            placeholder="MYT"
+            className="w-full px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm outline-none"
+          />
+        </div>
+      </div>
+
+      {variant === "ASSET" ? (
+        <div className="mb-3">
+          <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5">
+            Decimals ({MIN_ASSET_DECIMALS}-{MAX_ASSET_DECIMALS})
+          </div>
+          <input
+            type="number"
+            min={MIN_ASSET_DECIMALS}
+            max={MAX_ASSET_DECIMALS}
+            value={decimals}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              setDecimals(
+                Math.min(MAX_ASSET_DECIMALS, Math.max(MIN_ASSET_DECIMALS, n || MIN_ASSET_DECIMALS)),
+              );
+            }}
+            className="w-full px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm outline-none"
+          />
+        </div>
+      ) : (
+        <div className="mb-3">
+          <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5">Currency code</div>
+          <input
+            type="text"
+            value={currency}
+            onChange={(e) => setCurrency(e.target.value.toUpperCase().slice(0, 12))}
+            placeholder="USD"
+            className="w-full px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm outline-none"
+          />
+          <p className="text-xs text-[var(--mcp-text-dim)] mt-1">
+            Uppercase letters only. This is permanent once the token is created.
+          </p>
+        </div>
       )}
 
-      <div className="flex flex-col gap-2">
-        <label className="text-sm text-[var(--mcp-text-dim)]">Name</label>
+      <label className="flex items-start gap-2.5 mb-3 cursor-pointer">
         <input
-          type="text"
-          placeholder="My Token"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
+          type="checkbox"
+          checked={unlimitedSupply}
+          onChange={(e) => setUnlimitedSupply(e.target.checked)}
+          className="mt-0.5"
         />
-      </div>
+        <span className="text-sm">
+          No supply cap
+          <span className="block text-xs text-[var(--mcp-text-dim)]">
+            Uncheck to set a maximum total supply that minting can never exceed.
+          </span>
+        </span>
+      </label>
 
-      <div className="flex flex-col gap-2">
-        <label className="text-sm text-[var(--mcp-text-dim)]">Symbol</label>
-        <input
-          type="text"
-          placeholder="MYT"
-          value={symbol}
-          onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-        />
-      </div>
+      {!unlimitedSupply && (
+        <div className="mb-3">
+          <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5">
+            Max supply (whole tokens, not smallest units)
+          </div>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={formatThousands(supplyCap)}
+            onChange={(e) => setSupplyCap(e.target.value.replace(/\D/g, ""))}
+            placeholder="1.000.000"
+            className="w-full px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm outline-none"
+          />
+        </div>
+      )}
 
-      <div className="flex flex-col gap-2">
-        <label className="text-sm text-[var(--mcp-text-dim)]">
-          Decimals ({MIN_ASSET_DECIMALS}-{MAX_ASSET_DECIMALS})
-        </label>
+      <label className="flex items-start gap-2.5 mb-3 cursor-pointer">
         <input
-          type="number"
-          min={MIN_ASSET_DECIMALS}
-          max={MAX_ASSET_DECIMALS}
-          value={decimals}
-          onChange={(e) => setDecimals(Number(e.target.value))}
+          type="checkbox"
+          checked={seedPool}
+          onChange={(e) => setSeedPool(e.target.checked)}
+          className="mt-0.5"
         />
-      </div>
+        <span className="text-sm">
+          Also seed Uniswap V3 pool
+          <span className="block text-xs text-[var(--mcp-text-dim)]">
+            Creates a real pool so the token is swappable right away. Requires extra ETH and 3 more
+            transactions.
+          </span>
+        </span>
+      </label>
 
-      <div className="flex flex-col gap-2">
-        <label className="text-sm text-[var(--mcp-text-dim)]">Initial supply (optional)</label>
-        <input
-          type="number"
-          inputMode="decimal"
-          placeholder="0"
-          value={initialSupply}
-          onChange={(e) => setInitialSupply(e.target.value)}
-        />
-      </div>
+      {seedPool && (
+        <>
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            <div>
+              <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5">Pool token amount</div>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={formatThousands(poolTokenAmount)}
+                onChange={(e) => setPoolTokenAmount(e.target.value.replace(/\D/g, ""))}
+                placeholder="1.000.000"
+                className="w-full px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm outline-none"
+              />
+            </div>
+            <div>
+              <div className="text-xs text-[var(--mcp-text-dim)] mb-1.5">Pool ETH amount</div>
+              <input
+                type="number"
+                step="0.001"
+                min={0}
+                value={poolEthAmount}
+                onChange={(e) => setPoolEthAmount(e.target.value)}
+                placeholder="0.01"
+                className="w-full px-3.5 py-2.5 bg-black/20 border border-[var(--mcp-border)] rounded-xl text-sm outline-none"
+              />
+            </div>
+          </div>
+          <p className="text-xs text-[var(--mcp-text-dim)] mb-3">
+            Tokens are minted and deposited together with your ETH into a full-range Uniswap V3
+            pool (1% fee). Recommended minimum: 0.01 ETH.
+          </p>
+        </>
+      )}
+
+      {isActivated === false && (
+        <ErrorMessage message="This token type isn't live on this network yet. Try again later." />
+      )}
 
       <InfoBox
         rows={[
-          ["Predicted address", predictedAddress ?? "—"],
-          ["Variant", "Asset"],
+          ["Variant", variant === "ASSET" ? "Asset" : "Stablecoin"],
+          ["Mode", seedPool ? "Create + Pool" : "Create only"],
           ["Network", "Base Mainnet"],
-          ["Builder Code", "bc_2esgljny ✓"],
+          ...(predictedAddress
+            ? [["Predicted address", `${predictedAddress.slice(0, 10)}…${predictedAddress.slice(-6)}`]]
+            : []),
         ]}
       />
 
-      {(status === "creating" || status === "minting") && <Spinner />}
       <ErrorMessage message={error} />
 
+      {isConfirmed && createdTokenAddress && (
+        <div className="mt-3 space-y-2">
+          <div className="flex items-center gap-2 p-3 rounded-xl bg-black/20 border border-[var(--mcp-border)]">
+            <div className="flex-1 min-w-0">
+              <div className="text-xs text-[var(--mcp-text-dim)] mb-0.5">Token address</div>
+              <div className="text-sm font-mono truncate">{createdTokenAddress}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigator.clipboard.writeText(createdTokenAddress)}
+              className="shrink-0 px-3 py-1.5 text-xs rounded-lg bg-[var(--mcp-accent)] text-white hover:opacity-90"
+            >
+              Copy
+            </button>
+          </div>
+          <div className="flex gap-2 text-xs">
+            <a
+              href={`https://basescan.org/address/${createdTokenAddress}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[var(--mcp-accent)] hover:underline"
+            >
+              View token on Basescan
+            </a>
+            {txHash && (
+              <>
+                <span className="text-[var(--mcp-text-dim)]">·</span>
+                <a
+                  href={`https://basescan.org/tx/${txHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[var(--mcp-accent)] hover:underline"
+                >
+                  View tx
+                </a>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       <ActionButton
-        disabled={!canLaunch}
-        loading={status === "creating" || status === "minting"}
-        loadingText={status === "creating" ? "Creating token..." : "Minting supply..."}
         onClick={handleLaunch}
+        disabled={
+          !isConnected ||
+          !name.trim() ||
+          !symbol.trim() ||
+          (seedPool && (!poolTokenAmount.trim() || !poolEthAmount.trim())) ||
+          isActivated === false
+        }
+        loading={busy}
+        loadingText={
+          poolStep === "minting"
+            ? "Minting pool supply..."
+            : poolStep === "approving"
+              ? "Approving pool spend..."
+              : poolStep === "creating-pool"
+                ? "Creating pool..."
+                : isSubmitting
+                  ? "Confirm in wallet..."
+                  : "Waiting confirmation..."
+        }
+        className="mt-1"
       >
-        Launch Token
+        {!isConnected
+          ? "Connect Wallet to Launch"
+          : seedPool
+            ? "Launch Token + Pool"
+            : "Create Token"}
       </ActionButton>
 
-      {status === "success" && tokenAddress && (
-        <>
-          <InfoBox rows={[["Token address", tokenAddress]]} />
-          {txHash && <TxLink label="View on Basescan" href={`https://basescan.org/tx/${txHash}`} />}
-        </>
+      {isConfirmed && (
+        <button
+          type="button"
+          onClick={resetForm}
+          className="w-full mt-2 py-2 text-xs text-[var(--mcp-text-dim)] hover:text-white"
+        >
+          Launch another token
+        </button>
       )}
     </div>
   );

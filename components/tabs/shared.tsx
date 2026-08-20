@@ -52,7 +52,7 @@ export function ActionButton({
     <button
       onClick={onClick}
       disabled={disabled || loading}
-      className={`w-full py-4 rounded-[14px] text-base font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+      className={`w-full py-2.5 rounded-[14px] text-sm font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
         loading
           ? "bg-[var(--mcp-surface)] text-[var(--mcp-text-dim)]"
           : "bg-[var(--mcp-accent)] text-white hover:opacity-90"
