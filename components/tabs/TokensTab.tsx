@@ -14,6 +14,8 @@ import {
   fetchActivityTrades,
   fetchBaseMarketTokens,
   fetchLiquidityPools,
+  fetchTokenByAddress,
+  parseBaseAddress,
   refreshMarketTokens,
   formatAmount,
   formatPct,
@@ -53,6 +55,21 @@ function pctClass(value: number): string {
   if (value > 0) return "text-emerald-400";
   if (value < 0) return "text-red-400";
   return "text-[var(--mcp-text-dim)]";
+}
+
+function ListedBadge() {
+  return (
+    <span
+      className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-[#2081E2] text-[9px] leading-none text-white"
+      title="Listed token"
+    >
+      ✓
+    </span>
+  );
+}
+
+function isListedCoinbase(row: MarketToken, listed: Set<string>): boolean {
+  return listed.has(row.address.toLowerCase());
 }
 
 function sanitizeAmount(raw: string): string {
@@ -140,10 +157,49 @@ export function TokensTab() {
   const [sortKey, setSortKey] = useState<SortKey>("volumeH24");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [watched, setWatched] = useState<MarketToken[]>([]);
+  const [query, setQuery] = useState("");
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [listedAddresses, setListedAddresses] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setWatched(readWatchlist());
   }, []);
+
+  useEffect(() => {
+    if (rows.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const next = new Set<string>();
+      try {
+        const popular = await getTokens({ limit: "50", search: "" });
+        if (Array.isArray(popular)) {
+          for (const t of popular) {
+            if (t.address) next.add(t.address.toLowerCase());
+          }
+        }
+      } catch {
+        // ignore
+      }
+      const sample = rows.slice(0, 30);
+      for (const row of sample) {
+        const key = row.address.toLowerCase();
+        if (next.has(key)) continue;
+        try {
+          const found = await getTokens({ limit: "10", search: row.address });
+          if (Array.isArray(found) && found.some((t) => t.address?.toLowerCase() === key)) {
+            next.add(key);
+          }
+        } catch {
+          // ignore
+        }
+      }
+      if (!cancelled) setListedAddresses(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rows]);
 
   const watchedSet = useMemo(
     () => new Set(watched.map((w) => w.address.toLowerCase())),
@@ -189,6 +245,7 @@ export function TokensTab() {
   rowsRef.current = rows;
 
   useEffect(() => {
+    if (selected) return;
     const id = window.setInterval(() => {
       const addrs = rowsRef.current.map((r) => r.address);
       if (addrs.length === 0) return;
@@ -201,9 +258,49 @@ export function TokensTab() {
           );
         })
         .catch(() => undefined);
-    }, 5_000);
+    }, 1_000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [selected]);
+
+  async function handleImport() {
+    setSearchError(null);
+    const q = query.trim();
+    if (!q) return;
+    const addr = parseBaseAddress(q);
+    if (addr) {
+      setSearching(true);
+      try {
+        const row = await fetchTokenByAddress(addr);
+        try {
+          const found = await getTokens({ limit: "1", search: addr });
+          if (Array.isArray(found) && found[0]) {
+            row.name = found[0].name || row.name;
+            row.symbol = found[0].symbol || row.symbol;
+            row.image = found[0].image || row.image;
+          }
+        } catch {
+          // Keep DexScreener / stub metadata.
+        }
+        setSelected(row);
+        setQuery("");
+      } catch (e) {
+        const err = e as { message?: string };
+        setSearchError(err.message || "Could not import that contract.");
+      } finally {
+        setSearching(false);
+      }
+      return;
+    }
+    const lower = q.toLowerCase();
+    const hit = rows.find(
+      (r) =>
+        r.symbol.toLowerCase().includes(lower) ||
+        r.name.toLowerCase().includes(lower) ||
+        r.address.toLowerCase() === lower,
+    );
+    if (hit) setSelected(hit);
+    else setSearchError("No match. Paste a Base 0x contract to import.");
+  }
 
   function toggleWatch(row: MarketToken) {
     setWatched((prev) => {
@@ -244,7 +341,13 @@ export function TokensTab() {
   }, [rows, sortKey, sortDir]);
 
   if (selected) {
-    return <TokenDetail row={selected} onBack={() => setSelected(null)} />;
+    return (
+      <TokenDetail
+        row={selected}
+        onBack={() => setSelected(null)}
+        listedAddresses={listedAddresses}
+      />
+    );
   }
 
   return (
@@ -284,6 +387,33 @@ export function TokensTab() {
           </button>
         ))}
       </div>
+
+      <form
+        className="flex gap-2 mb-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void handleImport();
+        }}
+      >
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setSearchError(null);
+          }}
+          placeholder="Search name or paste a Base contract 0x…"
+          className="flex-1 min-w-0 px-3 py-2 bg-black/20 border border-[var(--mcp-border)] rounded-2xl text-sm outline-none"
+        />
+        <button
+          type="submit"
+          disabled={searching || !query.trim()}
+          className="px-4 py-2 rounded-2xl text-sm font-medium bg-[var(--mcp-accent)] text-white disabled:opacity-50"
+        >
+          {searching ? "…" : "Import"}
+        </button>
+      </form>
+      <ErrorMessage message={searchError} />
 
       <ErrorMessage message={listError} />
 
@@ -345,7 +475,10 @@ export function TokensTab() {
                         <span className="w-6 h-6 rounded-full bg-black/40" />
                       )}
                       <div className="min-w-0">
-                        <div className="font-medium truncate">{row.name}</div>
+                        <div className="font-medium truncate inline-flex items-center gap-1 max-w-full">
+                          <span className="truncate">{row.name}</span>
+                          {isListedCoinbase(row, listedAddresses) && <ListedBadge />}
+                        </div>
                         <div className="text-xs text-[var(--mcp-text-dim)]">{row.symbol}</div>
                       </div>
                     </div>
@@ -368,7 +501,15 @@ export function TokensTab() {
   );
 }
 
-function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) {
+function TokenDetail({
+  row,
+  onBack,
+  listedAddresses,
+}: {
+  row: MarketToken;
+  onBack: () => void;
+  listedAddresses: Set<string>;
+}) {
   const { address, isConnected } = useAccount();
   const { sendTransactionAsync } = useSendTransaction();
 
@@ -377,6 +518,8 @@ function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) 
   const [target, setTarget] = useState<Token>(() => marketToToken(row, 18, row.image));
   const [amount, setAmount] = useState("");
   const [quoteAmount, setQuoteAmount] = useState<string | null>(null);
+  const [fromUsd, setFromUsd] = useState<string | null>(null);
+  const [toUsd, setToUsd] = useState<string | null>(null);
   const [isQuoting, setIsQuoting] = useState(false);
   const [quoteWarning, setQuoteWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -420,6 +563,8 @@ function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) 
   const fetchQuote = useCallback(async () => {
     if (!address || !amount || Number(amount) <= 0) {
       setQuoteAmount(null);
+      setFromUsd(null);
+      setToUsd(null);
       setQuoteWarning(null);
       return;
     }
@@ -434,14 +579,20 @@ function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) 
       });
       if ("quote" in result) {
         setQuoteAmount(result.quote.toAmount ?? null);
+        setFromUsd(result.quote.fromAmountUSD ?? null);
+        setToUsd(result.quote.toAmountUSD ?? null);
         const warning = result.warning ?? result.quote.warning;
         setQuoteWarning(warning?.description ?? warning?.message ?? null);
       } else {
         setQuoteAmount(null);
+        setFromUsd(null);
+        setToUsd(null);
         setQuoteWarning(null);
       }
     } catch {
       setQuoteAmount(null);
+      setFromUsd(null);
+      setToUsd(null);
       setQuoteWarning(null);
     } finally {
       setIsQuoting(false);
@@ -515,6 +666,22 @@ function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) 
     return (Number(quoteAmount) / 10 ** toToken.decimals).toFixed(6);
   }, [quoteAmount, toToken.decimals]);
 
+  const payUsdLabel = useMemo(() => {
+    if (fromUsd) return formatUsd(Number(fromUsd));
+    if (side === "sell" && amount && Number(amount) > 0 && row.priceUsd > 0) {
+      return formatUsd(Number(amount) * row.priceUsd);
+    }
+    return "$0.00";
+  }, [fromUsd, side, amount, row.priceUsd]);
+
+  const receiveUsdLabel = useMemo(() => {
+    if (toUsd) return formatUsd(Number(toUsd));
+    if (side === "buy" && displayQuote && row.priceUsd > 0) {
+      return formatUsd(Number(displayQuote) * row.priceUsd);
+    }
+    return "$0.00";
+  }, [toUsd, side, displayQuote, row.priceUsd]);
+
   const chartSrc = dexscreenerEmbedUrl(row.pairAddress);
 
   return (
@@ -536,8 +703,10 @@ function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) 
                 <img src={row.image} alt="" className="w-11 h-11 rounded-full" />
               ) : null}
               <div>
-                <div className="font-bold text-xl">
-                  {row.name} <span className="text-[var(--mcp-text-dim)]">{row.symbol}</span>
+                <div className="font-bold text-xl inline-flex items-center gap-1.5 flex-wrap">
+                  <span>{row.name}</span>
+                  {isListedCoinbase(row, listedAddresses) && <ListedBadge />}
+                  <span className="text-[var(--mcp-text-dim)]">{row.symbol}</span>
                 </div>
                 <div className="text-sm text-[var(--mcp-text-dim)]">
                   {formatUsd(row.priceUsd)} · 24H {formatPct(row.changeH24)}
@@ -545,13 +714,19 @@ function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) 
               </div>
             </div>
             <div className="relative w-full h-[560px] rounded-2xl overflow-hidden bg-[#0b0e13]">
-              <iframe
-                title={`${row.symbol} chart`}
-                src={chartSrc}
-                className="absolute inset-x-0 top-0 w-full border-0"
-                style={{ height: "calc(100% + 42px)" }}
-                allow="clipboard-write"
-              />
+              {row.pairAddress ? (
+                <iframe
+                  title={`${row.symbol} chart`}
+                  src={chartSrc}
+                  className="absolute inset-x-0 top-0 w-full border-0"
+                  style={{ height: "calc(100% + 42px)" }}
+                  allow="clipboard-write"
+                />
+              ) : (
+                <div className="h-full flex items-center justify-center text-sm text-[var(--mcp-text-dim)] px-6 text-center">
+                  No DexScreener pool yet. You can still try Buy if a route exists.
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-5 pt-4 border-t border-[var(--mcp-border)]">
               <Stat label="FDV" value={formatUsd(row.fdv)} />
@@ -564,14 +739,14 @@ function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) 
           <TokenMarketTabs row={row} />
         </div>
 
-        <div className="w-full xl:w-[440px] shrink-0 xl:sticky xl:top-4 rounded-3xl border border-[var(--mcp-border)] bg-[var(--mcp-surface)] p-6 flex flex-col min-h-[560px]">
-          <div className="flex gap-1 mb-5">
+        <div className="w-full xl:w-[440px] shrink-0 xl:sticky xl:top-4 rounded-3xl border border-[var(--mcp-border)] bg-[var(--mcp-surface)] p-5 flex flex-col">
+          <div className="flex gap-1 mb-2">
             {(["buy", "sell"] as const).map((id) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setSide(id)}
-                className={`flex-1 py-2.5 rounded-full text-sm font-semibold capitalize ${
+                className={`px-4 py-1.5 rounded-full text-sm font-semibold capitalize ${
                   side === id
                     ? "bg-[var(--mcp-accent)] text-white"
                     : "text-[var(--mcp-text-dim)] border border-[var(--mcp-border)]"
@@ -582,17 +757,46 @@ function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) 
             ))}
           </div>
 
-          <div className="text-sm text-[var(--mcp-text-dim)] mb-1.5">
-            {side === "buy" ? "Pay with" : "Sell"}
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-sm text-[var(--mcp-text-dim)]">
+              {side === "buy" ? "Pay with" : "Sell"}
+            </span>
+            {fromBalance && (
+              <div className="flex items-center gap-1.5">
+                {[25, 50, 75].map((pct) => (
+                  <button
+                    key={pct}
+                    type="button"
+                    onClick={() => {
+                      const amt = (Number(fromBalance.formatted) * pct) / 100;
+                      setAmount(amt.toString());
+                    }}
+                    className="px-2 py-0.5 text-xs rounded-full border border-[var(--mcp-border)] text-[var(--mcp-text-dim)] hover:text-white hover:border-white/40"
+                  >
+                    {pct}%
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setAmount(fromBalance.formatted)}
+                  className="px-2 py-0.5 text-xs rounded-full border border-[var(--mcp-border)] text-[var(--mcp-text-dim)] hover:text-white hover:border-white/40"
+                >
+                  Max
+                </button>
+              </div>
+            )}
           </div>
-          <div className="flex gap-2 mb-2">
+          <div className="text-xs text-[var(--mcp-text-dim)] mb-1">
+            {fromBalance ? `Balance: ${Number(fromBalance.formatted).toFixed(6)}` : "\u00A0"}
+          </div>
+          <div className="flex gap-2 mb-1">
             <input
               type="text"
               inputMode="decimal"
               value={amount}
               onChange={(e) => setAmount(sanitizeAmount(e.target.value))}
               placeholder="0"
-              className="flex-1 min-w-0 px-4 py-4 bg-black/20 border border-[var(--mcp-border)] rounded-2xl text-2xl font-bold outline-none"
+              className="flex-1 min-w-0 px-4 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-2xl text-2xl font-bold outline-none"
             />
             {side === "buy" ? (
               <button
@@ -616,13 +820,22 @@ function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) 
               </div>
             )}
           </div>
-          <div className="text-xs text-[var(--mcp-text-dim)] mb-5">
-            {fromBalance ? `Balance: ${Number(fromBalance.formatted).toFixed(6)}` : "\u00A0"}
+          <div className="text-xs text-[var(--mcp-text-dim)] mb-1">{payUsdLabel}</div>
+
+          <div className="flex justify-center my-1">
+            <button
+              type="button"
+              onClick={() => setSide((s) => (s === "buy" ? "sell" : "buy"))}
+              className="w-9 h-9 rounded-full border border-[var(--mcp-border)] bg-black/30 text-sm text-[var(--mcp-text-dim)] hover:text-white"
+              aria-label="Switch buy and sell"
+            >
+              ↓
+            </button>
           </div>
 
-          <div className="text-sm text-[var(--mcp-text-dim)] mb-1.5">Receive</div>
-          <div className="flex gap-2 mb-6">
-            <div className="flex-1 min-w-0 px-4 py-4 bg-black/20 border border-[var(--mcp-border)] rounded-2xl text-2xl font-bold">
+          <div className="text-sm text-[var(--mcp-text-dim)] mb-1">Receive</div>
+          <div className="flex gap-2 mb-1">
+            <div className="flex-1 min-w-0 px-4 py-3 bg-black/20 border border-[var(--mcp-border)] rounded-2xl text-2xl font-bold">
               {isQuoting ? "…" : displayQuote ?? "0"}
             </div>
             {side === "buy" ? (
@@ -647,24 +860,23 @@ function TokenDetail({ row, onBack }: { row: MarketToken; onBack: () => void }) 
               </button>
             )}
           </div>
+          <div className="text-xs text-[var(--mcp-text-dim)] mb-3">{receiveUsdLabel}</div>
 
-          <div className="mt-auto">
-            <ErrorMessage message={quoteWarning ? `⚠️ ${quoteWarning}` : null} />
-            <ErrorMessage message={error} />
-            {swapHash && <TxLink label="Trade sent" href={`https://basescan.org/tx/${swapHash}`} />}
+          <ErrorMessage message={quoteWarning ? `⚠️ ${quoteWarning}` : null} />
+          <ErrorMessage message={error} />
+          {swapHash && <TxLink label="Trade sent" href={`https://basescan.org/tx/${swapHash}`} />}
 
-            <ActionButton
-              onClick={() => void handleTrade()}
-              disabled={!isConnected || !amount || Number(amount) <= 0}
-              loading={isSubmitting}
-              loadingText={txHash && !swapHash ? "Waiting approval..." : "Confirm in wallet..."}
-              className="py-3.5 text-base mt-2"
-            >
-              {!isConnected
-                ? "Connect Wallet"
-                : `${side === "buy" ? "Buy" : "Sell"} ${target.symbol}`}
-            </ActionButton>
-          </div>
+          <ActionButton
+            onClick={() => void handleTrade()}
+            disabled={!isConnected || !amount || Number(amount) <= 0}
+            loading={isSubmitting}
+            loadingText={txHash && !swapHash ? "Waiting approval..." : "Confirm in wallet..."}
+            className="py-3.5 text-base mt-2"
+          >
+            {!isConnected
+              ? "Connect Wallet"
+              : `${side === "buy" ? "Buy" : "Sell"} ${target.symbol}`}
+          </ActionButton>
         </div>
       </div>
     </div>

@@ -280,6 +280,39 @@ export async function fetchBaseMarketTokens(mode: "trending" | "new"): Promise<M
     .slice(0, 80);
 }
 
+export function parseBaseAddress(raw: string): `0x${string}` | null {
+  const text = raw.trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(text)) return null;
+  return text as `0x${string}`;
+}
+
+export async function fetchTokenByAddress(address: `0x${string}`): Promise<MarketToken> {
+  const want = address.toLowerCase();
+  const data = await getJson(`${DS}/token-pairs/v1/base/${address}`).catch(() => []);
+  const mapped = asPairs(data)
+    .map(toMarketToken)
+    .filter((row): row is MarketToken => row !== null);
+  const exact = mapped.find((row) => row.address.toLowerCase() === want);
+  if (exact) return exact;
+  const fallback = mergeTokens(mapped)[0];
+  if (fallback) return fallback;
+  return {
+    address,
+    name: "Unknown token",
+    symbol: "TOKEN",
+    image: null,
+    pairAddress: "",
+    priceUsd: 0,
+    changeH1: 0,
+    changeH24: 0,
+    volumeH24: 0,
+    fdv: null,
+    pairCreatedAt: null,
+    liquidityUsd: null,
+    quoteSymbol: "USD",
+  };
+}
+
 export async function refreshMarketTokens(addresses: string[]): Promise<MarketToken[]> {
   const uniq = [...new Set(addresses.map((a) => a.toLowerCase()).filter(Boolean))];
   if (uniq.length === 0) return [];

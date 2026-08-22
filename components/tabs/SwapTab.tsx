@@ -68,6 +68,18 @@ const ERC20_BALANCE_ABI = [
   },
 ] as const;
 
+const ERC20_META_ABI = [
+  { type: "function", name: "name", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  { type: "function", name: "symbol", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] },
+] as const;
+
+function parseBaseAddress(raw: string): `0x${string}` | null {
+  const text = raw.trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(text)) return null;
+  return text as `0x${string}`;
+}
+
 const CUSTOM_TOKENS_STORAGE_KEY = "mcpswap-custom-tokens";
 
 function loadCustomTokens(): Token[] {
@@ -153,6 +165,8 @@ export function SwapTab() {
   const [isSearchingTokens, setIsSearchingTokens] = useState(false);
   const [customTokens, setCustomTokens] = useState<Token[]>([]);
   const [pickerBalances, setPickerBalances] = useState<Record<string, bigint>>({});
+  const [listedAddresses, setListedAddresses] = useState<Set<string>>(new Set());
+  const [onChainImported, setOnChainImported] = useState<Set<string>>(new Set());
 
   const openPicker = useCallback((side: "from" | "to") => {
     setPickerFor(side);
@@ -167,8 +181,52 @@ export function SwapTab() {
     const id = setTimeout(async () => {
       try {
         const result = await getTokens({ search: searchQuery, limit: "30" });
+        let list: Token[] = Array.isArray(result) ? result : [];
+        const listed = new Set(
+          list
+            .map((t) => t.address.toLowerCase())
+            .concat(USDC.address.toLowerCase(), ""),
+        );
+        const pasted = parseBaseAddress(searchQuery);
+        if (pasted) {
+          const want = pasted.toLowerCase();
+          const inList = list.some((t) => t.address.toLowerCase() === want);
+          const saved = loadCustomTokens().find((t) => t.address.toLowerCase() === want);
+          if (!inList && saved) {
+            list = [saved, ...list];
+          } else if (!inList && publicClient) {
+            try {
+              const [name, symbol, decimals] = await Promise.all([
+                publicClient.readContract({ address: pasted, abi: ERC20_META_ABI, functionName: "name" }),
+                publicClient.readContract({ address: pasted, abi: ERC20_META_ABI, functionName: "symbol" }),
+                publicClient.readContract({ address: pasted, abi: ERC20_META_ABI, functionName: "decimals" }),
+              ]);
+              list = [
+                {
+                  address: pasted,
+                  chainId: CHAIN_ID,
+                  decimals: Number(decimals),
+                  name: String(name),
+                  symbol: String(symbol),
+                  image: "",
+                },
+                ...list,
+              ];
+              if (!cancelled) {
+                setOnChainImported((prev) => {
+                  const next = new Set(prev);
+                  next.add(want);
+                  return next;
+                });
+              }
+            } catch {
+              // Not a readable ERC-20 on Base — leave list as getTokens returned.
+            }
+          }
+        }
         if (!cancelled) {
-          setSearchResults(Array.isArray(result) ? result : []);
+          setListedAddresses(listed);
+          setSearchResults(list);
         }
       } catch {
         if (!cancelled) setSearchResults([]);
@@ -180,7 +238,15 @@ export function SwapTab() {
       cancelled = true;
       clearTimeout(id);
     };
-  }, [pickerFor, searchQuery]);
+  }, [pickerFor, searchQuery, publicClient]);
+
+  function isListedToken(token: Token): boolean {
+    if (token.address === "") return true;
+    const key = token.address.toLowerCase();
+    // On-chain paste / B20 factory-style addresses are never shown as listed.
+    if (onChainImported.has(key) || key.startsWith("0xb20")) return false;
+    return listedAddresses.has(key);
+  }
 
   function pickToken(token: Token) {
     if (pickerFor === "from") setFromToken(token);
@@ -583,7 +649,16 @@ export function SwapTab() {
                     <img src={ETH.image} alt="" className="w-8 h-8 rounded-full" />
                   )}
                   <div className="flex flex-col">
-                    <span className="text-sm font-semibold">{ETH.name}</span>
+                    <span className="text-sm font-semibold inline-flex items-center gap-1">
+                      {ETH.name}
+                      <span
+                        className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-[#2081E2] text-[9px] leading-none text-white"
+                        title="Listed token"
+                      >
+                        ✓
+                      </span>
+                   
+                    </span>
                     <span className="text-xs text-[var(--mcp-text-dim)]">{ETH.symbol}</span>
                   </div>
                 </button>
@@ -613,7 +688,18 @@ export function SwapTab() {
                         <img src={t.image} alt="" className="w-8 h-8 rounded-full" />
                       )}
                       <div className="flex flex-col flex-1 min-w-0">
-                        <span className="text-sm font-semibold">{t.name}</span>
+                        <span className="text-sm font-semibold inline-flex items-center gap-1">
+                          {t.name}
+                          {isListedToken(t) && (
+                            <span
+                        className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-[#2081E2] text-[9px] leading-none text-white"
+                        title="Listed token"
+                      >
+                        ✓
+                      </span>
+                   
+                          )}
+                        </span>
                         <span className="text-xs text-[var(--mcp-text-dim)]">
                           {t.symbol}
                           {t.address && (
