@@ -28,10 +28,19 @@ export default function Home() {
               "linear-gradient(90deg, transparent, var(--mcp-accent), #9b8cff, transparent)",
           }}
         />
-        <div className="max-w-5xl mx-auto w-full flex items-center justify-between px-6 py-4">
-          <span className="font-semibold text-lg tracking-tight">MCPSwap</span>
+        <div className="w-full flex items-center justify-between px-6 py-4">
+          <div className="flex items-center gap-2 shrink-0">
+            <img
+              src="/logo.webp"
+              alt=""
+              width={28}
+              height={28}
+              className="rounded-lg"
+            />
+            <span className="font-semibold text-lg tracking-tight">MCPSwap</span>
+          </div>
 
-          <nav className="hidden sm:flex items-center gap-1 bg-[var(--mcp-surface)] border border-[var(--mcp-border)] rounded-full p-1">
+          <nav className="hidden sm:flex items-center gap-1 bg-[var(--mcp-surface)] border border-[var(--mcp-border)] rounded-full p-1 absolute left-1/2 -translate-x-1/2">
             {TABS.map((tab) => (
               <button
                 key={tab}
@@ -47,20 +56,22 @@ export default function Home() {
             ))}
           </nav>
 
-          <Wallet>
-            <ConnectWallet>
-              <Avatar className="h-6 w-6" />
-              <Name />
-            </ConnectWallet>
-            <WalletDropdown>
-              <Identity className="px-4 pt-3 pb-2" hasCopyAddressOnClick>
-                <Avatar />
+          <div className="shrink-0">
+            <Wallet>
+              <ConnectWallet>
+                <Avatar className="h-6 w-6" />
                 <Name />
-                <Address />
-              </Identity>
-              <WalletDropdownDisconnect />
-            </WalletDropdown>
-          </Wallet>
+              </ConnectWallet>
+              <WalletDropdown>
+                <Identity className="px-4 pt-3 pb-2" hasCopyAddressOnClick>
+                  <Avatar />
+                  <Name />
+                  <Address />
+                </Identity>
+                <WalletDropdownDisconnect />
+              </WalletDropdown>
+            </Wallet>
+          </div>
         </div>
 
         <nav className="sm:hidden flex gap-1 overflow-x-auto px-4 pb-3">
