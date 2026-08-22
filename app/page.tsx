@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { ConnectWallet, Wallet, WalletDropdown, WalletDropdownDisconnect } from "@coinbase/onchainkit/wallet";
 import { Avatar, Name, Identity, Address } from "@coinbase/onchainkit/identity";
-import type { Token } from "@coinbase/onchainkit/token";
 import { SwapTab } from "@/components/tabs/SwapTab";
 import { TokensTab } from "@/components/tabs/TokensTab";
 import { LaunchB20Tab } from "@/components/tabs/LaunchB20Tab";
@@ -11,12 +10,11 @@ import { MintTab } from "@/components/tabs/MintTab";
 import { DeployTab } from "@/components/tabs/DeployTab";
 import { BreedTab } from "@/components/tabs/BreedTab";
 
-const TABS = ["Swap", "Tokens", "Launch B20", "Mint NFT", "Deploy Contract", "Breed NFT"] as const;
+const TABS = ["Swap", "Tokens", "Launch B20", "NFT Tools", "Deploy Contract", "Breed NFT"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("Swap");
-  const [pendingSwapToken, setPendingSwapToken] = useState<Token | null>(null);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -92,23 +90,10 @@ export default function Home() {
       </header>
 
       <main className="flex-1 flex items-center justify-center px-4 py-16">
-        {activeTab === "Swap" && (
-          <SwapTab
-            pendingToken={pendingSwapToken}
-            onPendingConsumed={() => setPendingSwapToken(null)}
-          />
-        )}
+        {activeTab === "Swap" && <SwapTab />}
         {activeTab === "Tokens" && <TokensTab />}
-        {activeTab === "Launch B20" && (
-          <LaunchB20Tab
-            onRequestSwap={(token) => {
-              setPendingSwapToken(token as Token);
-              setActiveTab("Swap");
-            }}
-          />
-        )}
-
-        {activeTab === "Mint NFT" && <MintTab />}
+        {activeTab === "Launch B20" && <LaunchB20Tab />}
+        {activeTab === "NFT Tools" && <MintTab />}
         {activeTab === "Deploy Contract" && <DeployTab />}
         {activeTab === "Breed NFT" && <BreedTab />}
       </main>
